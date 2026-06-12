@@ -36,7 +36,8 @@ const DEFAULT_PERMS = {
 // ── ESTADO ────────────────────────────────────────────
 let currentUser   = null;
 let userProfile   = null;
-let isRegistering = false; // evita race condition no onAuthStateChanged
+let isRegistering    = false; // evita race condition no onAuthStateChanged
+let pendingAuthError = null;  // preserva erro entre mudanças de estado do auth
 let currentEquip  = 'refrig';
 let currentYear   = new Date().getFullYear();
 let currentMonth  = new Date().getMonth() + 1;
@@ -158,7 +159,12 @@ function showLoginScreen() {
   hide('app'); hide('pendingScreen');
   show('loginScreen');
   show('panelLogin'); hide('panelRegister');
-  clearAuthError();
+  if (pendingAuthError) {
+    showAuthError(pendingAuthError);
+    pendingAuthError = null;
+  } else {
+    clearAuthError();
+  }
 }
 
 function showApp() {
@@ -280,11 +286,14 @@ function initAuth() {
         const doc = await db.collection('usuarios').doc(user.uid).get();
         userProfile = doc.exists ? doc.data() : null;
       } catch(e) {
-        userProfile = null;
+        // Regras do Firestore bloqueando — orienta o usuário
+        pendingAuthError = 'Erro de permissão no banco de dados. Atualize as Regras do Firestore no Firebase Console para: allow read, write: if request.auth != null;';
+        await auth.signOut();
+        return;
       }
 
       if (!userProfile) {
-        showAuthError('Perfil não encontrado. Contate o administrador.');
+        pendingAuthError = 'Perfil não encontrado para este e-mail. Use "Solicitar cadastro" para criar sua conta.';
         await auth.signOut();
         return;
       }
