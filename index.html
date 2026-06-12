@@ -1,0 +1,167 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>PAC — Monitoramento de Temperatura</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+
+<!-- ══════════ TELA DO APP (somente na tela) ══════════ -->
+<div class="app" id="app">
+
+  <header class="app-header">
+    <div class="brand">
+      <div class="brand-logo">
+        <span class="brand-rei">REI</span>
+        <span class="brand-sub">da Mussarela<br>e do Pão de Queijo</span>
+      </div>
+      <div class="brand-divider"></div>
+      <div class="brand-title">
+        <h1>PAC — Planilha de Monitoramento de Temperatura</h1>
+        <p>Setor de Produção · Rede de Frio · Frequência: 3× ao dia</p>
+      </div>
+    </div>
+    <div class="doc-meta">
+      <div>Data de emissão: 01/04/26</div>
+      <div>Revisão nº: — &nbsp; Data: —</div>
+      <div>Documento: 01</div>
+    </div>
+  </header>
+
+  <!-- ABAS -->
+  <nav class="tabs">
+    <button class="tab active" data-equip="refrig">
+      <span class="tab-icon">❄</span>
+      Cont 1 — Refrigeração
+      <span class="tab-ref">0°C a 4°C</span>
+    </button>
+    <button class="tab" data-equip="cong">
+      <span class="tab-icon">🧊</span>
+      Cont 2 — Congelamento
+      <span class="tab-ref">−18°C</span>
+    </button>
+  </nav>
+
+  <!-- BARRA OBJETIVO -->
+  <div class="equip-bar">
+    <span><b>Objetivo:</b> Monitorar temperatura da rede de frio</span>
+    <span><b>Temp. referência:</b> <span id="refTempLabel">0°C a 4°C</span></span>
+    <span><b>Equipamento:</b> <span id="equipLabel">Cont 1 - Refrigeração</span></span>
+  </div>
+
+  <!-- NAVEGAÇÃO DE MÊS + AÇÕES -->
+  <div class="toolbar">
+    <div class="month-nav">
+      <button id="prevMonth" class="btn-nav">&#9664;</button>
+      <span id="monthLabel" class="month-label">—</span>
+      <button id="nextMonth" class="btn-nav">&#9654;</button>
+    </div>
+    <div class="toolbar-actions">
+      <span class="sync-status" id="syncStatus" title="Status da sincronização">
+        <span class="sync-dot" id="syncDot"></span>
+        <span id="syncLabel">Conectando...</span>
+      </span>
+      <button class="btn-action btn-add" id="btnAdd">+ Nova Leitura</button>
+      <button class="btn-action btn-print" id="btnPrint">🖨 Imprimir PAC</button>
+      <button class="btn-action btn-export" id="btnExport">↓ Exportar CSV</button>
+    </div>
+  </div>
+
+  <!-- FORMULÁRIO DE ENTRADA -->
+  <div class="entry-form" id="entryForm" style="display:none">
+    <div class="form-header">
+      <h3 id="formTitle">Registrar Leitura</h3>
+      <button class="btn-close" id="btnCancel">✕</button>
+    </div>
+    <div class="form-body">
+      <div class="form-row-top">
+        <div class="form-group">
+          <label>Data</label>
+          <input type="date" id="fDate" />
+        </div>
+        <div class="form-group">
+          <label>Responsável</label>
+          <input type="text" id="fResp" placeholder="Nome do responsável" />
+        </div>
+      </div>
+      <div class="form-periods">
+        <div class="period-block">
+          <div class="period-title">☀ Manhã</div>
+          <div class="period-inputs">
+            <input type="time" id="fManhaHora" />
+            <input type="number" id="fManhaTemp" step="0.1" placeholder="°C" />
+          </div>
+        </div>
+        <div class="period-block">
+          <div class="period-title">🌤 Tarde</div>
+          <div class="period-inputs">
+            <input type="time" id="fTardeHora" />
+            <input type="number" id="fTardeTemp" step="0.1" placeholder="°C" />
+          </div>
+        </div>
+        <div class="period-block">
+          <div class="period-title">🌙 Noite</div>
+          <div class="period-inputs">
+            <input type="time" id="fNoiteHora" />
+            <input type="number" id="fNoiteTemp" step="0.1" placeholder="°C" />
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="form-footer">
+      <button class="btn-primary" id="btnSave">Salvar Leitura</button>
+      <button class="btn-secondary" id="btnCancelBottom">Cancelar</button>
+    </div>
+  </div>
+
+  <!-- TABELA PRINCIPAL -->
+  <div class="table-wrapper">
+    <table class="pac-table" id="pacTable">
+      <thead>
+        <tr class="thead-top">
+          <th rowspan="2">Data<br><small>d/m/a</small></th>
+          <th colspan="2">Manhã</th>
+          <th colspan="2">Tarde</th>
+          <th colspan="2">Noite</th>
+          <th rowspan="2">Responsável</th>
+          <th rowspan="2" class="no-print">Ações</th>
+        </tr>
+        <tr class="thead-sub">
+          <th>Horário</th><th>Temperatura</th>
+          <th>Horário</th><th>Temperatura</th>
+          <th>Horário</th><th>Temperatura</th>
+        </tr>
+      </thead>
+      <tbody id="pacBody"></tbody>
+    </table>
+  </div>
+
+  <!-- RODAPÉ SUPERVISOR -->
+  <div class="supervisor-panel">
+    <div class="sup-field">
+      <label>Nome do supervisor:</label>
+      <input type="text" id="supervisorName" placeholder="Nome completo" />
+    </div>
+    <div class="sup-field">
+      <label>Assinatura:</label>
+      <div class="sig-line"></div>
+    </div>
+    <div class="sup-field">
+      <label>Data:</label>
+      <input type="date" id="supervisorDate" />
+    </div>
+  </div>
+
+</div><!-- /app -->
+
+<!-- ══════════ ÁREA DE IMPRESSÃO (somente no print) ══════════ -->
+<div class="print-view" id="printView"></div>
+
+<!-- Firebase SDK (compat — funciona sem bundler) -->
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore-compat.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
