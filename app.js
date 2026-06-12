@@ -503,6 +503,435 @@ function printPAC() {
   window.print();
 }
 
+// ─── Modal de Lançamento em Lote ─────────────────────────────────────────────
+
+// Gera todas as datas entre dois strings YYYY-MM-DD
+function dateRange(fromStr, toStr) {
+  const dates = [];
+  const cur   = new Date(fromStr + 'T00:00:00');
+  const end   = new Date(toStr   + 'T00:00:00');
+  if (isNaN(cur) || isNaN(end) || cur > end) return dates;
+  while (cur <= end) {
+    dates.push(cur.toISOString().slice(0, 10));
+    cur.setDate(cur.getDate() + 1);
+  }
+  return dates;
+}
+
+// Busca entry de qualquer mês (olha no localCache ou localStorage)
+function getEntryForDate(ds) {
+  const mk  = ds.slice(0, 7);                       // YYYY-MM
+  const key = `${state.equip}_${mk}`;
+  const all = lsAll();
+  const src = (all[key] && all[key].entries) || {};
+  return src[ds] || null;
+}
+
+function buildBulkRows(fromStr, toStr) {
+  const cfg    = EQUIP_CFG[state.equip];
+  const tbody  = document.getElementById('bulkBody');
+  const dates  = dateRange(fromStr, toStr);
+  tbody.innerHTML = '';
+
+  if (dates.length === 0) {
+    tbody.innerHTML = '<tr><td colspan="9" style="text-align:center;padding:20px;color:var(--muted)">Período inválido.</td></tr>';
+    return;
+  }
+
+  let lastMonth = '';
+
+  dates.forEach(ds => {
+    const month = ds.slice(0, 7);
+    const [y, m, d] = ds.split('-');
+    const dFmt = `${d}/${m}/${y}`;
+
+    // Separador de mês
+    if (month !== lastMonth) {
+      lastMonth = month;
+      const [my, mm] = month.split('-');
+      const sep = document.createElement('tr');
+      sep.className = 'bulk-month-sep';
+      sep.innerHTML = `<td colspan="9">${MONTHS_PT[parseInt(mm)-1]} ${my}</td>`;
+      tbody.appendChild(sep);
+    }
+
+    const e   = getEntryForDate(ds) || {};
+    const val = (obj, k) =>
+      (obj && obj[k] !== undefined && obj[k] !== null && obj[k] !== '') ? obj[k] : '';
+
+    const tr = document.createElement('tr');
+    tr.dataset.date = ds;
+
+    tr.innerHTML = `
+      <td class="bulk-date-cell">${dFmt}</td>
+      <td><input type="time"   class="bh" data-p="manha" value="${val(e.manha,'hora')}" /></td>
+      <td class="bt"><input type="number" class="bt-in" data-p="manha" step="0.1" placeholder="°C" value="${val(e.manha,'temp')}" /></td>
+      <td><input type="time"   class="bh" data-p="tarde" value="${val(e.tarde,'hora')}" /></td>
+      <td class="bt"><input type="number" class="bt-in" data-p="tarde" step="0.1" placeholder="°C" value="${val(e.tarde,'temp')}" /></td>
+      <td><input type="time"   class="bh" data-p="noite" value="${val(e.noite,'hora')}" /></td>
+      <td class="bt"><input type="number" class="bt-in" data-p="noite" step="0.1" placeholder="°C" value="${val(e.noite,'temp')}" /></td>
+      <td><input type="text"   class="br" placeholder="Responsável" value="${e.responsavel||''}" /></td>
+      <td class="col-clear"><button class="btn-clear-row" title="Limpar linha">✕</button></td>`;
+
+    tbody.appendChild(tr);
+  });
+
+  // Cor ao vivo
+  tbody.querySelectorAll('.bt-in').forEach(inp => {
+    colorBulkTemp(inp, cfg);
+    inp.addEventListener('input', () => colorBulkTemp(inp, cfg));
+  });
+
+  // Limpar linha
+  tbody.querySelectorAll('.btn-clear-row').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const row = btn.closest('tr');
+      row.querySelectorAll('input').forEach(i => { i.value = ''; });
+      row.querySelectorAll('.bt').forEach(td => { td.className = 'bt'; });
+    });
+  });
+}
+
+function openBulkModal() {
+  const cfg = EQUIP_CFG[state.equip];
+
+  document.getElementById('bulkModalTitle').textContent =
+    `Lançamento em Lote — ${cfg.label}`;
+
+  // Datas padrão: primeiro e último dia do mês exibido
+  const firstDay = `${state.year}-${String(state.month+1).padStart(2,'0')}-01`;
+  const lastDay  = new Date(state.year, state.month+1, 0).getDate();
+  const lastDayStr = `${state.year}-${String(state.month+1).padStart(2,'0')}-${String(lastDay).padStart(2,'0')}`;
+
+  document.getElementById('qDateFrom').value = firstDay;
+  document.getElementById('qDateTo').value   = lastDayStr;
+
+  buildBulkRows(firstDay, lastDayStr);
+  document.getElementById('bulkModal').style.display = 'flex';
+}
+
+function colorBulkTemp(inp, cfg) {
+  const td = inp.parentElement;
+  const t  = parseFloat(inp.value);
+  td.className = 'bt';
+  if (!inp.value || isNaN(t)) return;
+  if (cfg.isOk(t))    td.classList.add('t-ok');
+  else if (cfg.isWarn(t)) td.classList.add('t-warn');
+  else td.classList.add('t-alarm');
+}
+
+function closeBulkModal() {
+  document.getElementById('bulkModal').style.display = 'none';
+}
+
+// Registra eventos do modal — null-safe: se o HTML for antigo, não quebra o script
+function setupBulkModalEvents() {
+  const el = id => document.getElementById(id);
+
+  // Aplicar horário padrão nas células vazias
+  el('btnFillHoras')?.addEventListener('click', () => {
+    const qM = el('qManhaHora').value;
+    const qT = el('qTardeHora').value;
+    const qN = el('qNoiteHora').value;
+    document.querySelectorAll('#bulkBody tr').forEach(tr => {
+      tr.querySelectorAll('.bh').forEach(inp => {
+        if (inp.value) return;
+        const p = inp.dataset.p;
+        if (p === 'manha' && qM) inp.value = qM;
+        if (p === 'tarde'  && qT) inp.value = qT;
+        if (p === 'noite'  && qN) inp.value = qN;
+      });
+    });
+  });
+
+  // Aplicar responsável padrão nas células vazias
+  el('btnFillResp')?.addEventListener('click', () => {
+    const qR = el('qResp').value.trim();
+    if (!qR) return;
+    document.querySelectorAll('#bulkBody .br').forEach(inp => {
+      if (!inp.value) inp.value = qR;
+    });
+  });
+
+  // Gerar tabela com período personalizado
+  el('btnSetRange')?.addEventListener('click', () => {
+    const from = el('qDateFrom').value;
+    const to   = el('qDateTo').value;
+    if (!from || !to) { alert('Selecione as datas de início e fim.'); return; }
+    buildBulkRows(from, to);
+  });
+
+  // Salvar tudo do modal — suporta múltiplos meses
+  el('btnBulkSave')?.addEventListener('click', async () => {
+    const rows = document.querySelectorAll('#bulkBody tr[data-date]');
+    let saved = 0;
+
+    // Agrupa entradas por mês (YYYY-MM)
+    const byMonth = {};
+
+    rows.forEach(tr => {
+      const ds = tr.dataset.date;
+      if (!ds) return;
+
+      const hora = p => tr.querySelector(`.bh[data-p="${p}"]`).value;
+      const temp = p => tr.querySelector(`.bt-in[data-p="${p}"]`).value;
+      const resp = tr.querySelector('.br').value.trim();
+
+      const hasAny = temp('manha') || temp('tarde') || temp('noite') || resp;
+      if (!hasAny) return;
+
+      const mk = ds.slice(0, 7);
+      if (!byMonth[mk]) byMonth[mk] = {};
+      byMonth[mk][ds] = {
+        responsavel: resp,
+        manha: { hora: hora('manha'), temp: temp('manha') },
+        tarde: { hora: hora('tarde'), temp: temp('tarde') },
+        noite: { hora: hora('noite'), temp: temp('noite') },
+      };
+      saved++;
+    });
+
+    if (saved === 0) { alert('Nenhum dado preenchido para salvar.'); return; }
+
+    const btn = el('btnBulkSave');
+    btn.disabled = true;
+    btn.textContent = 'Salvando...';
+
+    setSyncStatus('syncing', 'Salvando...');
+
+    // Salva cada mês no localStorage e Firestore
+    const allLS = lsAll();
+    const promises = Object.entries(byMonth).map(async ([mk, newEntries]) => {
+      const docKey = `${state.equip}_${mk}`;
+
+      // Merge com dados existentes no localStorage
+      const existing = (allLS[docKey] && allLS[docKey].entries) || {};
+      const merged   = { ...existing, ...newEntries };
+
+      allLS[docKey] = { entries: merged, supervisor: (allLS[docKey] && allLS[docKey].supervisor) || {} };
+
+      // Se é o mês atual, atualiza o localCache também
+      if (mk === monthKey()) localCache.entries = merged;
+
+      // Salva no Firestore
+      try {
+        await db.collection(COL).doc(docKey).set({
+          entries:    merged,
+          supervisor: allLS[docKey].supervisor,
+        });
+      } catch (_) { /* salvo localmente */ }
+    });
+
+    try { localStorage.setItem(LS_KEY, JSON.stringify(allLS)); } catch (_) {}
+    await Promise.all(promises);
+
+    renderTable();
+    closeBulkModal();
+    setSyncStatus('synced', 'Sincronizado');
+
+    btn.disabled = false;
+    btn.textContent = '💾 Salvar Tudo';
+    alert(`✅ ${saved} dia(s) salvos com sucesso!`);
+  });
+
+  el('btnBulkCancel')?.addEventListener('click', closeBulkModal);
+  el('bulkModalClose')?.addEventListener('click', closeBulkModal);
+  el('bulkModal')?.addEventListener('click', e => {
+    if (e.target === el('bulkModal')) closeBulkModal();
+  });
+}
+
+setupBulkModalEvents();
+
+// ─── Baixar Modelo de Planilha ────────────────────────────────────────────────
+function downloadTemplate() {
+  const cfg  = EQUIP_CFG[state.equip];
+  const days = new Date(state.year, state.month + 1, 0).getDate();
+  const mk   = String(state.month + 1).padStart(2, '0');
+
+  const rows = [
+    // Cabeçalho informativo
+    [`PAC - Planilha de Monitoramento de Temperatura`, '', '', '', '', '', '', ''],
+    [`Equipamento: ${cfg.label}`, `Referência: ${cfg.refTemp}`, '', '', '', '', '', ''],
+    [`Mês: ${MONTHS_PT[state.month]} ${state.year}`, '', '', '', '', '', '', ''],
+    [`INSTRUÇÕES: Preencha as colunas abaixo. Não altere a linha de cabeçalhos. Salve como CSV UTF-8 para importar.`, '', '', '', '', '', '', ''],
+    ['', '', '', '', '', '', '', ''],
+    // Cabeçalhos das colunas
+    ['Data', 'Manhã - Horário', 'Manhã - Temperatura °C',
+     'Tarde - Horário', 'Tarde - Temperatura °C',
+     'Noite - Horário', 'Noite - Temperatura °C', 'Responsável'],
+  ];
+
+  // Dias do mês — pré-preenchidos com os dados existentes
+  const entries = getEntries();
+  for (let d = 1; d <= days; d++) {
+    const ds  = `${state.year}-${mk}-${String(d).padStart(2,'0')}`;
+    const e   = entries[ds] || {};
+    const dFmt = `${String(d).padStart(2,'0')}/${mk}/${state.year}`;
+    rows.push([
+      dFmt,
+      (e.manha && e.manha.hora)  || '',
+      (e.manha && e.manha.temp !== '' && e.manha.temp !== undefined) ? e.manha.temp : '',
+      (e.tarde && e.tarde.hora)  || '',
+      (e.tarde && e.tarde.temp !== '' && e.tarde.temp !== undefined) ? e.tarde.temp : '',
+      (e.noite && e.noite.hora)  || '',
+      (e.noite && e.noite.temp !== '' && e.noite.temp !== undefined) ? e.noite.temp : '',
+      e.responsavel || '',
+    ]);
+  }
+
+  const csv  = rows.map(r => r.map(c => `"${String(c).replace(/"/g,'""')}"`).join(';')).join('\r\n');
+  const blob = new Blob(['﻿' + csv], { type: 'text/csv;charset=utf-8;' });
+  const url  = URL.createObjectURL(blob);
+  const a    = Object.assign(document.createElement('a'), {
+    href: url,
+    download: `MODELO_PAC_${cfg.label.replace(/\s/g,'_')}_${state.year}-${mk}.csv`,
+  });
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(url), 500);
+}
+
+// ─── Importar Planilha (CSV) ──────────────────────────────────────────────────
+function importCSV(file) {
+  if (!file) return;
+
+  const reader = new FileReader();
+  reader.onload = async evt => {
+    let text = evt.target.result;
+
+    // Remove BOM se presente
+    if (text.charCodeAt(0) === 0xFEFF) text = text.slice(1);
+
+    // Detecta separador: ponto-e-vírgula ou vírgula
+    const sep = text.indexOf(';') !== -1 ? ';' : ',';
+
+    const lines = text.split(/\r?\n/).map(l => l.trim()).filter(Boolean);
+
+    // Encontra a linha de cabeçalho das colunas (contém "Data")
+    let headerIdx = -1;
+    for (let i = 0; i < lines.length; i++) {
+      const clean = lines[i].replace(/"/g, '').toLowerCase();
+      if (clean.startsWith('data')) { headerIdx = i; break; }
+    }
+
+    if (headerIdx === -1) {
+      alert('Formato não reconhecido.\nUse o modelo baixado pelo botão "⬇ Baixar Modelo".');
+      return;
+    }
+
+    function parseLine(line) {
+      const cols = []; let cur = '', inQ = false;
+      for (const ch of line) {
+        if (ch === '"') { inQ = !inQ; }
+        else if (ch === sep && !inQ) { cols.push(cur.trim()); cur = ''; }
+        else { cur += ch; }
+      }
+      cols.push(cur.trim());
+      return cols;
+    }
+
+    function toDateStr(raw) {
+      // Aceita DD/MM/YYYY, DD/MM/YY, YYYY-MM-DD
+      const r = raw.replace(/"/g,'').trim();
+      let m = r.match(/^(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{2,4})$/);
+      if (!m) return null;
+      let [, a, b, c] = m;
+      let day, month, year;
+      if (parseInt(c) > 31) { // YYYY primeiro? Não neste padrão, mas cobre DD/MM/YYYY
+        day = parseInt(a); month = parseInt(b); year = parseInt(c);
+      } else {
+        day = parseInt(a); month = parseInt(b); year = parseInt(c);
+      }
+      if (year < 100) year += 2000;
+      return `${year}-${String(month).padStart(2,'0')}-${String(day).padStart(2,'0')}`;
+    }
+
+    function toHora(v) {
+      const s = v.replace(/"/g,'').trim();
+      return /^\d{1,2}:\d{2}$/.test(s) ? s.padStart(5,'0') : '';
+    }
+
+    function toTemp(v) {
+      const s = v.replace(/"/g,'').replace(',','.').trim();
+      const n = parseFloat(s);
+      return isNaN(n) ? '' : String(n);
+    }
+
+    // Processa linhas de dados
+    const byMonth = {};
+    let imported = 0, skipped = 0;
+
+    for (let i = headerIdx + 1; i < lines.length; i++) {
+      const cols = parseLine(lines[i]);
+      if (!cols[0] || !cols[0].replace(/"/g,'').trim()) continue;
+
+      const ds = toDateStr(cols[0]);
+      if (!ds) { skipped++; continue; }
+
+      const mk = ds.slice(0, 7);
+      if (!byMonth[mk]) byMonth[mk] = {};
+
+      const entry = {
+        responsavel: (cols[7] || '').replace(/"/g,'').trim(),
+        manha: { hora: toHora(cols[1]||''), temp: toTemp(cols[2]||'') },
+        tarde: { hora: toHora(cols[3]||''), temp: toTemp(cols[4]||'') },
+        noite: { hora: toHora(cols[5]||''), temp: toTemp(cols[6]||'') },
+      };
+
+      const hasData = entry.manha.temp || entry.tarde.temp || entry.noite.temp || entry.responsavel
+                   || entry.manha.hora || entry.tarde.hora || entry.noite.hora;
+      if (!hasData) { skipped++; continue; }
+
+      byMonth[mk][ds] = entry;
+      imported++;
+    }
+
+    if (imported === 0) {
+      alert('Nenhum dado encontrado.\nVerifique se o arquivo usa o modelo correto e tem dados preenchidos.');
+      return;
+    }
+
+    // Salva no localStorage e Firestore — mesmo esquema do lançamento em lote
+    setSyncStatus('syncing', 'Importando...');
+    const allLS = lsAll();
+
+    const promises = Object.entries(byMonth).map(async ([mk, newEntries]) => {
+      const docKey   = `${state.equip}_${mk}`;
+      const existing = (allLS[docKey] && allLS[docKey].entries) || {};
+      const merged   = { ...existing, ...newEntries };
+
+      allLS[docKey] = { entries: merged, supervisor: (allLS[docKey] && allLS[docKey].supervisor) || {} };
+
+      if (mk === monthKey()) localCache.entries = merged;
+
+      try {
+        await db.collection(COL).doc(docKey).set({
+          entries:    merged,
+          supervisor: allLS[docKey].supervisor,
+        });
+      } catch (_) { /* salvo localmente */ }
+    });
+
+    try { localStorage.setItem(LS_KEY, JSON.stringify(allLS)); } catch (_) {}
+    await Promise.all(promises);
+
+    renderTable();
+    setSyncStatus('synced', 'Sincronizado');
+
+    const msg = [`✅ ${imported} dia(s) importado(s) com sucesso!`];
+    if (skipped > 0) msg.push(`⚠ ${skipped} linha(s) ignorada(s) (datas inválidas ou vazias).`);
+    const meses = Object.keys(byMonth).map(mk => {
+      const [y,m] = mk.split('-');
+      return `${MONTHS_PT[parseInt(m)-1]} ${y}`;
+    }).join(', ');
+    msg.push(`Mês(es) atualizados: ${meses}`);
+    alert(msg.join('\n'));
+  };
+
+  reader.onerror = () => alert('Erro ao ler o arquivo. Tente novamente.');
+  reader.readAsText(file, 'UTF-8');
+}
+
 // ─── Exportar CSV ─────────────────────────────────────────────────────────────
 function exportCSV() {
   const cfg     = EQUIP_CFG[state.equip];
@@ -584,6 +1013,14 @@ document.getElementById('btnAdd').addEventListener('click', () => {
 document.getElementById('btnSave').addEventListener('click', saveEntryForm);
 document.getElementById('btnCancel').addEventListener('click', hideForm);
 document.getElementById('btnCancelBottom').addEventListener('click', hideForm);
+document.getElementById('btnBulk').addEventListener('click', openBulkModal);
+document.getElementById('btnTemplate').addEventListener('click', downloadTemplate);
+document.getElementById('btnImport').addEventListener('click', () =>
+  document.getElementById('csvFileInput').click());
+document.getElementById('csvFileInput').addEventListener('change', e => {
+  if (e.target.files[0]) importCSV(e.target.files[0]);
+  e.target.value = '';
+});
 document.getElementById('btnPrint').addEventListener('click', printPAC);
 document.getElementById('btnExport').addEventListener('click', exportCSV);
 

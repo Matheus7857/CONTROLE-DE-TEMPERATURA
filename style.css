@@ -235,6 +235,237 @@ body {
 .btn-print:hover { border-color: var(--blue); color: var(--blue); }
 .btn-export { background: var(--surface); border-color: var(--green); color: var(--green); }
 .btn-export:hover { background: var(--green); color: #fff; }
+.btn-bulk     { background: #7c3aed; color: #fff; border-color: #7c3aed; }
+.btn-bulk:hover { background: #6d28d9; border-color: #6d28d9; }
+.btn-template { background: var(--surface); border-color: #0891b2; color: #0891b2; }
+.btn-template:hover { background: #0891b2; color: #fff; }
+.btn-import   { background: #0891b2; color: #fff; border-color: #0891b2; }
+.btn-import:hover { background: #0e7490; border-color: #0e7490; }
+
+/* ═══════════════════════════════════════════════════════
+   MODAL DE LANÇAMENTO EM LOTE
+═══════════════════════════════════════════════════════ */
+.modal-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0,0,0,0.55);
+  z-index: 500;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 16px;
+}
+
+.modal {
+  background: var(--surface);
+  border-radius: 14px;
+  width: 100%;
+  max-width: 1050px;
+  max-height: 92vh;
+  display: flex;
+  flex-direction: column;
+  box-shadow: 0 24px 80px rgba(0,0,0,0.35);
+  overflow: hidden;
+}
+
+.modal-header {
+  padding: 18px 24px 14px;
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  background: linear-gradient(135deg, #f5f3ff, #ede9fe);
+}
+
+.modal-header h2 { font-size: 1.1rem; color: #5b21b6; }
+.modal-subtitle   { font-size: 0.78rem; color: var(--muted); margin-top: 2px; }
+
+/* Barra de ações rápidas */
+.bulk-quick-bar {
+  padding: 10px 20px;
+  background: var(--surface2);
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  flex-wrap: wrap;
+  gap: 16px;
+  align-items: center;
+}
+
+.quick-fill-group {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.quick-fill-group label {
+  font-size: 0.78rem;
+  color: var(--muted);
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.quick-fill-group input[type="time"],
+.quick-fill-group input[type="text"] {
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 5px 8px;
+  font-size: 0.82rem;
+  color: var(--text);
+  outline: none;
+  background: var(--surface);
+}
+
+.quick-fill-group input:focus { border-color: #7c3aed; }
+
+.qfg-period { background: #ede9fe; border-radius: 8px; padding: 6px 12px !important; }
+.qfg-sep { font-size: 0.8rem; color: var(--muted); }
+.quick-fill-separator { width: 1px; background: var(--border); align-self: stretch; margin: 0 4px; }
+
+.btn-quick {
+  padding: 5px 12px;
+  border: 1px solid #7c3aed;
+  border-radius: 6px;
+  background: transparent;
+  color: #7c3aed;
+  font-size: 0.78rem;
+  font-weight: 600;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: all 0.15s;
+}
+
+.btn-quick:hover { background: #7c3aed; color: #fff; }
+.btn-quick-primary { background: #7c3aed; color: #fff; }
+.btn-quick-primary:hover { background: #6d28d9; }
+
+/* Corpo do modal */
+.modal-body {
+  overflow-y: auto;
+  flex: 1;
+}
+
+/* Tabela em lote */
+.bulk-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.83rem;
+}
+
+.bulk-table thead th {
+  background: #1e3a5f;
+  color: #fff;
+  padding: 7px 6px;
+  text-align: center;
+  font-size: 0.72rem;
+  font-weight: 600;
+  border: 1px solid #2d4e75;
+  position: sticky;
+  top: 0;
+  z-index: 2;
+}
+
+.bulk-table .col-clear { width: 48px; }
+
+.bulk-table tbody tr:nth-child(odd)  td { background: #fafafa; }
+.bulk-table tbody tr:nth-child(even) td { background: #f3f4f6; }
+.bulk-table tbody tr:hover td { background: #eff6ff !important; }
+
+.bulk-table td {
+  border: 1px solid var(--border);
+  padding: 2px;
+  vertical-align: middle;
+}
+
+.bulk-date-cell {
+  text-align: center;
+  font-weight: 700;
+  font-size: 0.8rem;
+  color: var(--blue);
+  padding: 4px 10px !important;
+  white-space: nowrap;
+  min-width: 68px;
+}
+
+.bulk-table input[type="time"],
+.bulk-table input[type="number"],
+.bulk-table input[type="text"] {
+  width: 100%;
+  border: none;
+  padding: 6px 5px;
+  font-size: 0.82rem;
+  background: transparent;
+  outline: none;
+  text-align: center;
+  font-family: inherit;
+  color: var(--text);
+  -moz-appearance: textfield;
+}
+
+.bulk-table input[type="number"]::-webkit-inner-spin-button { display: none; }
+
+.bulk-table input:focus {
+  background: #dbeafe;
+  border-radius: 3px;
+}
+
+/* Cores de temperatura ao vivo */
+.bulk-table td.t-ok    { background: rgba(14,159,110,0.12) !important; }
+.bulk-table td.t-warn  { background: rgba(194,120,3,0.12)  !important; }
+.bulk-table td.t-alarm { background: rgba(224,36,36,0.12)  !important; }
+.bulk-table td.t-ok   input { color: var(--green); font-weight: 700; }
+.bulk-table td.t-warn input  { color: var(--yellow); font-weight: 700; }
+.bulk-table td.t-alarm input { color: var(--red);   font-weight: 700; }
+
+.bulk-month-sep td {
+  background: #1e3a5f !important;
+  color: #fff;
+  font-size: 0.78rem;
+  font-weight: 700;
+  padding: 5px 14px !important;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  border: none !important;
+}
+
+.btn-clear-row {
+  border: none;
+  background: none;
+  cursor: pointer;
+  color: var(--muted);
+  font-size: 0.9rem;
+  padding: 4px 8px;
+  border-radius: 4px;
+  transition: all 0.15s;
+  width: 100%;
+}
+
+.btn-clear-row:hover { background: var(--red-lt); color: var(--red); }
+
+/* Rodapé do modal */
+.modal-footer {
+  padding: 12px 20px;
+  border-top: 1px solid var(--border);
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  background: var(--surface2);
+}
+
+.modal-footer-actions { display: flex; gap: 8px; }
+
+.bulk-legend {
+  display: flex;
+  gap: 14px;
+  font-size: 0.75rem;
+  color: var(--muted);
+}
+
+.leg { display: flex; align-items: center; gap: 4px; }
+.leg-ok    { color: var(--green); }
+.leg-warn  { color: var(--yellow); }
+.leg-alarm { color: var(--red); }
 
 /* ═══════════════════════════════════════════════════════
    FORMULÁRIO

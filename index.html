@@ -4,11 +4,11 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>PAC — Monitoramento de Temperatura</title>
-  <link rel="stylesheet" href="style.css" />
+  <link rel="stylesheet" href="style.css?v=5" />
 </head>
 <body>
 
-<!-- ══════════ TELA DO APP (somente na tela) ══════════ -->
+<!-- ══════════ TELA DO APP ══════════ -->
 <div class="app" id="app">
 
   <header class="app-header">
@@ -51,7 +51,7 @@
     <span><b>Equipamento:</b> <span id="equipLabel">Cont 1 - Refrigeração</span></span>
   </div>
 
-  <!-- NAVEGAÇÃO DE MÊS + AÇÕES -->
+  <!-- TOOLBAR -->
   <div class="toolbar">
     <div class="month-nav">
       <button id="prevMonth" class="btn-nav">&#9664;</button>
@@ -59,17 +59,21 @@
       <button id="nextMonth" class="btn-nav">&#9654;</button>
     </div>
     <div class="toolbar-actions">
-      <span class="sync-status" id="syncStatus" title="Status da sincronização">
-        <span class="sync-dot" id="syncDot"></span>
+      <span class="sync-status" id="syncStatus">
+        <span class="sync-dot"></span>
         <span id="syncLabel">Conectando...</span>
       </span>
-      <button class="btn-action btn-add" id="btnAdd">+ Nova Leitura</button>
-      <button class="btn-action btn-print" id="btnPrint">🖨 Imprimir PAC</button>
-      <button class="btn-action btn-export" id="btnExport">↓ Exportar CSV</button>
+      <button class="btn-action btn-add"      id="btnAdd">+ Nova Leitura</button>
+      <button class="btn-action btn-bulk"     id="btnBulk">📋 Lançamento em Lote</button>
+      <button class="btn-action btn-template" id="btnTemplate">⬇ Baixar Modelo</button>
+      <button class="btn-action btn-import"   id="btnImport">↑ Importar Planilha</button>
+      <button class="btn-action btn-print"    id="btnPrint">🖨 Imprimir PAC</button>
+      <button class="btn-action btn-export"   id="btnExport">↓ Exportar CSV</button>
+      <input type="file" id="csvFileInput" accept=".csv,.xlsx,.xls" style="display:none" />
     </div>
   </div>
 
-  <!-- FORMULÁRIO DE ENTRADA -->
+  <!-- FORMULÁRIO INDIVIDUAL -->
   <div class="entry-form" id="entryForm" style="display:none">
     <div class="form-header">
       <h3 id="formTitle">Registrar Leitura</h3>
@@ -90,28 +94,28 @@
         <div class="period-block">
           <div class="period-title">☀ Manhã</div>
           <div class="period-inputs">
-            <input type="time" id="fManhaHora" />
+            <input type="time"   id="fManhaHora" />
             <input type="number" id="fManhaTemp" step="0.1" placeholder="°C" />
           </div>
         </div>
         <div class="period-block">
           <div class="period-title">🌤 Tarde</div>
           <div class="period-inputs">
-            <input type="time" id="fTardeHora" />
+            <input type="time"   id="fTardeHora" />
             <input type="number" id="fTardeTemp" step="0.1" placeholder="°C" />
           </div>
         </div>
         <div class="period-block">
           <div class="period-title">🌙 Noite</div>
           <div class="period-inputs">
-            <input type="time" id="fNoiteHora" />
+            <input type="time"   id="fNoiteHora" />
             <input type="number" id="fNoiteTemp" step="0.1" placeholder="°C" />
           </div>
         </div>
       </div>
     </div>
     <div class="form-footer">
-      <button class="btn-primary" id="btnSave">Salvar Leitura</button>
+      <button class="btn-primary"   id="btnSave">Salvar Leitura</button>
       <button class="btn-secondary" id="btnCancelBottom">Cancelar</button>
     </div>
   </div>
@@ -156,12 +160,86 @@
 
 </div><!-- /app -->
 
-<!-- ══════════ ÁREA DE IMPRESSÃO (somente no print) ══════════ -->
+<!-- ══════════ MODAL DE LANÇAMENTO EM LOTE ══════════ -->
+<div class="modal-overlay" id="bulkModal" style="display:none" role="dialog" aria-modal="true">
+  <div class="modal">
+
+    <div class="modal-header">
+      <div>
+        <h2 id="bulkModalTitle">Lançamento em Lote</h2>
+        <p class="modal-subtitle">Preencha os campos diretamente na tabela. Use Tab para avançar entre células.</p>
+      </div>
+      <button class="btn-close" id="bulkModalClose">✕</button>
+    </div>
+
+    <!-- Ações rápidas -->
+    <div class="bulk-quick-bar">
+      <div class="quick-fill-group qfg-period">
+        <label>Período:</label>
+        <input type="date" id="qDateFrom" />
+        <span class="qfg-sep">até</span>
+        <input type="date" id="qDateTo" />
+        <button class="btn-quick btn-quick-primary" id="btnSetRange">Gerar tabela</button>
+      </div>
+      <div class="quick-fill-separator"></div>
+      <div class="quick-fill-group">
+        <label>Hora padrão — Manhã:</label>
+        <input type="time" id="qManhaHora" value="08:00" />
+        <label>Tarde:</label>
+        <input type="time" id="qTardeHora" value="14:00" />
+        <label>Noite:</label>
+        <input type="time" id="qNoiteHora" value="20:00" />
+        <button class="btn-quick" id="btnFillHoras">Aplicar horários em branco</button>
+      </div>
+      <div class="quick-fill-group">
+        <label>Responsável padrão:</label>
+        <input type="text" id="qResp" placeholder="Nome" style="width:140px" />
+        <button class="btn-quick" id="btnFillResp">Aplicar em branco</button>
+      </div>
+    </div>
+
+    <div class="modal-body">
+      <table class="bulk-table">
+        <thead>
+          <tr>
+            <th rowspan="2">Data</th>
+            <th colspan="2">Manhã ☀</th>
+            <th colspan="2">Tarde 🌤</th>
+            <th colspan="2">Noite 🌙</th>
+            <th rowspan="2">Responsável</th>
+            <th rowspan="2" class="col-clear">Limpar</th>
+          </tr>
+          <tr>
+            <th>Horário</th><th>Temp (°C)</th>
+            <th>Horário</th><th>Temp (°C)</th>
+            <th>Horário</th><th>Temp (°C)</th>
+          </tr>
+        </thead>
+        <tbody id="bulkBody"></tbody>
+      </table>
+    </div>
+
+    <div class="modal-footer">
+      <div class="bulk-legend">
+        <span class="leg leg-ok">▌ Dentro do limite</span>
+        <span class="leg leg-warn">▌ Atenção</span>
+        <span class="leg leg-alarm">▌ Fora do limite</span>
+      </div>
+      <div class="modal-footer-actions">
+        <button class="btn-primary"   id="btnBulkSave">💾 Salvar Tudo</button>
+        <button class="btn-secondary" id="btnBulkCancel">Cancelar</button>
+      </div>
+    </div>
+
+  </div>
+</div>
+
+<!-- ══════════ ÁREA DE IMPRESSÃO ══════════ -->
 <div class="print-view" id="printView"></div>
 
-<!-- Firebase SDK (compat — funciona sem bundler) -->
+<!-- Firebase SDK -->
 <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore-compat.js"></script>
-<script src="app.js"></script>
+<script src="app.js?v=5"></script>
 </body>
 </html>
