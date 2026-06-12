@@ -1,6 +1,8 @@
-'use strict';
+/* ══════════════════════════════════════════════════════
+   PAC TEMPERATURA v6 — Firebase Auth + Permissões + Mobile
+   ══════════════════════════════════════════════════════ */
 
-// ─── Firebase ─────────────────────────────────────────────────────────────────
+// ── FIREBASE CONFIG ───────────────────────────────────
 const firebaseConfig = {
   apiKey:            "AIzaSyDRudb6bvkn3g5q9cQErbgql8HPkqLPmTA",
   authDomain:        "fit-track-76263.firebaseapp.com",
@@ -11,227 +13,71 @@ const firebaseConfig = {
 };
 
 firebase.initializeApp(firebaseConfig);
-const db  = firebase.firestore();
-const COL = 'pac_monitoramento';
+const auth = firebase.auth();
+const db   = firebase.firestore();
 
-// ─── Configuração dos equipamentos ────────────────────────────────────────────
-const EQUIP_CFG = {
-  refrig: {
-    label:   'Cont 1 - Refrigeração',
-    refTemp: '0°C a 4°C',
-    isOk:    t => t >= 0 && t <= 4,
-    isWarn:  t => (t >= -1 && t < 0) || (t > 4 && t <= 5),
-  },
-  cong: {
-    label:   'Cont 2 - Congelamento',
-    refTemp: '−18°C',
-    isOk:    t => t <= -18,
-    isWarn:  t => t > -18 && t <= -15,
-  },
+// ── PERMISSÕES ────────────────────────────────────────
+const PERM_LABELS = {
+  novaLeitura:    'Nova Leitura',
+  lancamentoLote: 'Lançamento em Lote',
+  importar:       'Importar Planilha',
+  exportar:       'Exportar CSV',
+  imprimir:       'Imprimir PAC',
+  excluir:        'Excluir leituras',
+  admin:          'Administração',
 };
 
-const MONTHS_PT = [
-  'Janeiro','Fevereiro','Março','Abril','Maio','Junho',
-  'Julho','Agosto','Setembro','Outubro','Novembro','Dezembro',
-];
-
-// ─── Estado ───────────────────────────────────────────────────────────────────
-let state = {
-  equip:       'refrig',
-  year:        new Date().getFullYear(),
-  month:       new Date().getMonth(),
-  editingDate: null,
+const DEFAULT_PERMS = {
+  admin:      { novaLeitura: true,  lancamentoLote: true,  importar: true,  exportar: true,  imprimir: true,  excluir: true,  admin: true  },
+  supervisor: { novaLeitura: true,  lancamentoLote: true,  importar: false, exportar: true,  imprimir: true,  excluir: false, admin: false },
+  operador:   { novaLeitura: true,  lancamentoLote: false, importar: false, exportar: false, imprimir: false, excluir: false, admin: false },
 };
 
-let localCache    = { entries: {}, supervisor: { name: '', date: '' } };
-let firestoreUnsub = null;
+// ── ESTADO ────────────────────────────────────────────
+let currentUser   = null;
+let userProfile   = null;
+let currentEquip  = 'refrig';
+let currentYear   = new Date().getFullYear();
+let currentMonth  = new Date().getMonth() + 1;
+let localCache    = { entries: {}, supervisor: {} };
+let fsUnsubscribe = null;
+let editingUid    = null;
 
-// ─── Helpers ──────────────────────────────────────────────────────────────────
-function monthKey() {
-  return `${state.year}-${String(state.month + 1).padStart(2, '0')}`;
-}
-function docId()  { return `${state.equip}_${monthKey()}`; }
-function docRef() { return db.collection(COL).doc(docId()); }
+const EQUIP_CONFIG = {
+  refrig: { label: 'Cont 1 - Refrigeração', ref: '0°C a 4°C', min: 0,   max: 4   },
+  cong:   { label: 'Cont 2 - Congelamento', ref: '−18°C',      min: -25, max: -14 },
+};
 
-// ─── localStorage — backup local (funciona offline) ───────────────────────────
-const LS_KEY = 'pac_backup_v2';
-
-function lsAll() {
-  try { return JSON.parse(localStorage.getItem(LS_KEY)) || {}; }
-  catch { return {}; }
+// ── HELPERS LOCALSTORAGE ──────────────────────────────
+function lsKey(equip, year, month) {
+  return `pac_backup_v2_${equip}_${year}_${String(month).padStart(2,'0')}`;
 }
 
 function lsSaveCurrent() {
-  try {
-    const all = lsAll();
-    all[docId()] = { entries: localCache.entries, supervisor: localCache.supervisor };
-    localStorage.setItem(LS_KEY, JSON.stringify(all));
-  } catch (_) {}
+  try { localStorage.setItem(lsKey(currentEquip, currentYear, currentMonth), JSON.stringify(localCache)); } catch(e) {}
 }
 
 function lsLoadCurrent() {
-  const data = lsAll()[docId()];
-  return data
-    ? { entries: data.entries || {}, supervisor: data.supervisor || { name:'', date:'' } }
-    : { entries: {}, supervisor: { name:'', date:'' } };
-}
-
-// ─── Status de sincronização ──────────────────────────────────────────────────
-function setSyncStatus(cls, label) {
-  document.getElementById('syncStatus').className = `sync-status ${cls}`;
-  document.getElementById('syncLabel').textContent = label;
-}
-
-// ─── Firestore: listener em tempo real ────────────────────────────────────────
-function subscribeMonth() {
-  if (firestoreUnsub) firestoreUnsub();
-
-  // FIX 1: Renderizar imediatamente com dados do localStorage
-  localCache = lsLoadCurrent();
-  renderAll();
-  setSyncStatus('syncing', 'Sincronizando...');
-
-  firestoreUnsub = docRef().onSnapshot(
-    snap => {
-      if (snap.exists) {
-        localCache = {
-          entries:    snap.data().entries    || {},
-          supervisor: snap.data().supervisor || { name:'', date:'' },
-        };
-        lsSaveCurrent(); // atualiza backup local
-      }
-      // Se não existe no Firestore, mantém o localStorage (já carregado acima)
-      setSyncStatus('synced', 'Sincronizado');
-      renderAll();
-    },
-    err => {
-      console.warn('Firestore indisponível:', err.code || err.message);
-      // FIX 3: Renderizar mesmo com erro — usa dados locais
-      setSyncStatus('offline', 'Dados locais');
-      renderAll();
-    }
-  );
-}
-
-// ─── Escrita no Firestore (sempre grava o cache completo) ─────────────────────
-// FIX 2: Grava localCache.entries inteiro — nunca parcial — para não perder dados.
-async function fsWrite() {
-  setSyncStatus('syncing', 'Salvando...');
   try {
-    await docRef().set({
-      entries:    localCache.entries    || {},
-      supervisor: localCache.supervisor || {},
-    });
-    setSyncStatus('synced', 'Sincronizado');
-  } catch (err) {
-    console.error('Erro Firebase:', err.code || err.message);
-    setSyncStatus('offline', 'Salvo localmente');
-    // Não lança exceção: dado já está no localStorage
-  }
+    const raw = localStorage.getItem(lsKey(currentEquip, currentYear, currentMonth));
+    if (raw) { localCache = JSON.parse(raw); return true; }
+  } catch(e) {}
+  localCache = { entries: {}, supervisor: {} };
+  return false;
 }
 
-// ─── CRUD de entradas ─────────────────────────────────────────────────────────
-function getEntries()    { return localCache.entries    || {}; }
-function getSupervisor() { return localCache.supervisor || { name:'', date:'' }; }
-
-async function saveEntry(dateStr, entry) {
-  localCache.entries[dateStr] = entry;
-  lsSaveCurrent();   // salva localmente primeiro
-  renderTable();     // UI atualiza imediatamente
-  await fsWrite();   // persiste no Firebase (async, sem bloquear UI)
+// ── UTILIDADES ────────────────────────────────────────
+function monthKey(equip, year, month) {
+  return `${equip}_${year}-${String(month).padStart(2,'0')}`;
 }
 
-async function deleteEntry(dateStr) {
-  delete localCache.entries[dateStr];
-  lsSaveCurrent();
-  renderTable();
-  await fsWrite();
+function padZ(n) { return String(n).padStart(2,'0'); }
+
+function today() {
+  const d = new Date();
+  return `${d.getFullYear()}-${padZ(d.getMonth()+1)}-${padZ(d.getDate())}`;
 }
 
-async function saveSupervisorData(data) {
-  localCache.supervisor = data;
-  lsSaveCurrent();
-  await fsWrite();
-}
-
-// ─── Renderização ─────────────────────────────────────────────────────────────
-function renderAll() {
-  const cfg = EQUIP_CFG[state.equip];
-
-  document.getElementById('refTempLabel').textContent = cfg.refTemp;
-  document.getElementById('equipLabel').textContent   = cfg.label;
-  document.getElementById('monthLabel').textContent   =
-    `${MONTHS_PT[state.month]} de ${state.year}`;
-
-  document.querySelectorAll('.tab').forEach(t =>
-    t.classList.toggle('active', t.dataset.equip === state.equip));
-
-  renderTable();
-  loadSupervisorPanel();
-}
-
-function tempClass(t, cfg) {
-  if (cfg.isOk(t))   return 'temp-ok';
-  if (cfg.isWarn(t)) return 'temp-warn';
-  return 'temp-alarm';
-}
-
-function periodCells(e, period, cfg) {
-  if (!e || !e[period]) return '<td></td><td></td>';
-  const p = e[period];
-  const isEmpty = p.temp === '' || p.temp === null || p.temp === undefined;
-  if (isEmpty) return `<td>${p.hora || ''}</td><td></td>`;
-  const t   = parseFloat(p.temp);
-  const cls = tempClass(t, cfg);
-  return `<td>${p.hora || ''}</td><td class="${cls}">${t.toFixed(1)}°C</td>`;
-}
-
-function renderTable() {
-  const cfg     = EQUIP_CFG[state.equip];
-  const entries = getEntries();
-  const tbody   = document.getElementById('pacBody');
-  const today   = new Date().toISOString().slice(0, 10);
-  const days    = new Date(state.year, state.month + 1, 0).getDate();
-
-  tbody.innerHTML = '';
-
-  for (let d = 1; d <= days; d++) {
-    const ds   = `${state.year}-${String(state.month + 1).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
-    const dFmt = `${String(d).padStart(2, '0')}/${String(state.month + 1).padStart(2, '0')}/${state.year}`;
-    const e    = entries[ds];
-    const tr   = document.createElement('tr');
-
-    if (ds === today) tr.classList.add('today-row');
-
-    // Indicadores de turnos preenchidos
-    function hasData(period) {
-      return e && e[period] && e[period].temp !== '' && e[period].temp !== null && e[period].temp !== undefined;
-    }
-    const badges = e ? `
-      <span class="turn-badge ${hasData('manha') ? 'filled' : 'empty'}" title="Manhã">M</span>
-      <span class="turn-badge ${hasData('tarde')  ? 'filled' : 'empty'}" title="Tarde">T</span>
-      <span class="turn-badge ${hasData('noite')  ? 'filled' : 'empty'}" title="Noite">N</span>
-    ` : '';
-
-    tr.innerHTML = `
-      <td class="date-cell">
-        ${dFmt}
-        ${badges ? `<div class="turn-badges">${badges}</div>` : ''}
-      </td>
-      ${periodCells(e, 'manha', cfg)}
-      ${periodCells(e, 'tarde', cfg)}
-      ${periodCells(e, 'noite', cfg)}
-      <td>${e ? (e.responsavel || '') : ''}</td>
-      <td class="action-cell no-print">
-        <button class="btn-icon" title="Editar / Adicionar turno" onclick="startEdit('${ds}')">✏</button>
-        ${e ? `<button class="btn-icon btn-del" title="Excluir" onclick="delEntry('${ds}')">✕</button>` : ''}
-      </td>`;
-
-    tbody.appendChild(tr);
-  }
-}
-
-// ─── Período automático baseado na hora atual ─────────────────────────────────
 function currentPeriod() {
   const h = new Date().getHours();
   if (h >= 6  && h < 12) return 'manha';
@@ -239,791 +85,1083 @@ function currentPeriod() {
   return 'noite';
 }
 
-function currentTimeStr() {
-  const now = new Date();
-  return `${String(now.getHours()).padStart(2,'0')}:${String(now.getMinutes()).padStart(2,'0')}`;
+function daysInMonth(year, month) {
+  return new Date(year, month, 0).getDate();
 }
 
-// ─── Formulário ───────────────────────────────────────────────────────────────
-function startEdit(dateStr, autoFill) {
-  state.editingDate = dateStr;
-  const e     = getEntries()[dateStr] || {};
-  const parts = dateStr.split('-');
-  const dFmt  = `${parts[2]}/${parts[1]}/${parts[0]}`;
-
-  document.getElementById('formTitle').textContent = `Leitura de ${dFmt}`;
-  document.getElementById('fDate').value           = dateStr;
-  document.getElementById('fResp').value           = e.responsavel || '';
-
-  const val = (obj, k) =>
-    (obj && obj[k] !== undefined && obj[k] !== null && obj[k] !== '') ? obj[k] : '';
-
-  document.getElementById('fManhaHora').value = val(e.manha, 'hora');
-  document.getElementById('fManhaTemp').value = val(e.manha, 'temp');
-  document.getElementById('fTardeHora').value = val(e.tarde, 'hora');
-  document.getElementById('fTardeTemp').value = val(e.tarde, 'temp');
-  document.getElementById('fNoiteHora').value = val(e.noite, 'hora');
-  document.getElementById('fNoiteTemp').value = val(e.noite, 'temp');
-
-  // Auto-preencher hora e período SOMENTE se a data for hoje
-  const isToday = dateStr === new Date().toISOString().slice(0, 10);
-  if (autoFill && isToday) {
-    const periodo = currentPeriod();
-    const hora    = currentTimeStr();
-    const nomes   = { manha: 'Manhã', tarde: 'Tarde', noite: 'Noite' };
-    const ids     = { manha: 'fManhaHora', tarde: 'fTardeHora', noite: 'fNoiteHora' };
-    const tempIds = { manha: 'fManhaTemp', tarde: 'fTardeTemp', noite: 'fNoiteTemp' };
-
-    if (!document.getElementById(ids[periodo]).value) {
-      document.getElementById(ids[periodo]).value = hora;
-    }
-
-    document.getElementById('formTitle').textContent =
-      `Leitura de ${dFmt} — ${nomes[periodo]}`;
-
-    document.querySelectorAll('.period-block').forEach((blk, i) => {
-      const periods = ['manha','tarde','noite'];
-      blk.style.borderColor = periods[i] === periodo ? 'var(--blue)' : '';
-      blk.style.background  = periods[i] === periodo ? '#eff6ff'     : '';
-    });
-
-    setTimeout(() => document.getElementById(tempIds[periodo]).focus(), 100);
-  } else {
-    // Lançamento antigo: sem auto-preenchimento, todos os campos livres
-    document.querySelectorAll('.period-block').forEach(blk => {
-      blk.style.borderColor = '';
-      blk.style.background  = '';
-    });
-    if (!isToday) {
-      setTimeout(() => document.getElementById('fManhaHora').focus(), 100);
-    }
-  }
-
-  const form = document.getElementById('entryForm');
-  form.style.display = 'block';
-  form.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
-}
-
-// Abre formulário em branco para lançar um dia qualquer do mês exibido
-function startEditBlank() {
-  state.editingDate = null;
-
-  const firstDay = `${state.year}-${String(state.month + 1).padStart(2,'0')}-01`;
-  const lastDay  = new Date(state.year, state.month + 1, 0).getDate();
-  const minDate  = firstDay;
-  const maxDate  = `${state.year}-${String(state.month + 1).padStart(2,'0')}-${String(lastDay).padStart(2,'0')}`;
-
-  document.getElementById('formTitle').textContent = 'Lançamento Retroativo';
-  document.getElementById('fDate').min   = minDate;
-  document.getElementById('fDate').max   = maxDate;
-  document.getElementById('fDate').value = '';
-  document.getElementById('fResp').value = '';
-  document.getElementById('fManhaHora').value = '';
-  document.getElementById('fManhaTemp').value = '';
-  document.getElementById('fTardeHora').value = '';
-  document.getElementById('fTardeTemp').value = '';
-  document.getElementById('fNoiteHora').value = '';
-  document.getElementById('fNoiteTemp').value = '';
-
-  document.querySelectorAll('.period-block').forEach(blk => {
-    blk.style.borderColor = '';
-    blk.style.background  = '';
-  });
-
-  const form = document.getElementById('entryForm');
-  form.style.display = 'block';
-  form.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
-  setTimeout(() => document.getElementById('fDate').focus(), 100);
-}
-
-function hideForm() {
-  document.getElementById('entryForm').style.display = 'none';
-  state.editingDate = null;
-
-  // Limpa os limites de data que podem ter sido definidos por startEditBlank
-  document.getElementById('fDate').min = '';
-  document.getElementById('fDate').max = '';
-}
-
-async function saveEntryForm() {
-  const dateStr = document.getElementById('fDate').value || state.editingDate;
-  if (!dateStr) { alert('Selecione uma data.'); return; }
-
-  const entry = {
-    responsavel: document.getElementById('fResp').value.trim(),
-    manha: {
-      hora: document.getElementById('fManhaHora').value,
-      temp: document.getElementById('fManhaTemp').value,
-    },
-    tarde: {
-      hora: document.getElementById('fTardeHora').value,
-      temp: document.getElementById('fTardeTemp').value,
-    },
-    noite: {
-      hora: document.getElementById('fNoiteHora').value,
-      temp: document.getElementById('fNoiteTemp').value,
-    },
-  };
-
-  // Alerta de temperatura fora do limite
-  const cfg      = EQUIP_CFG[state.equip];
-  const nomes    = { manha: 'Manhã', tarde: 'Tarde', noite: 'Noite' };
-  const fora     = ['manha','tarde','noite'].filter(p => {
-    const t = parseFloat(entry[p].temp);
-    return entry[p].temp !== '' && !isNaN(t) && !cfg.isOk(t) && !cfg.isWarn(t);
-  });
-
-  if (fora.length > 0) {
-    const ok = confirm(
-      `⚠ TEMPERATURA FORA DO LIMITE!\n\nPeríodo(s): ${fora.map(p => nomes[p]).join(', ')}\nReferência: ${cfg.refTemp}\n\nDeseja salvar mesmo assim?`
-    );
-    if (!ok) return;
-  }
-
-  const btn = document.getElementById('btnSave');
-  btn.disabled = true;
-  btn.textContent = 'Salvando...';
-  try {
-    await saveEntry(dateStr, entry);
-    hideForm();
-  } finally {
-    btn.disabled = false;
-    btn.textContent = 'Salvar Leitura';
-  }
-}
-
-async function delEntry(dateStr) {
-  const p = dateStr.split('-');
-  if (!confirm(`Excluir leitura de ${p[2]}/${p[1]}/${p[0]}?`)) return;
-  await deleteEntry(dateStr);
-}
-
-// ─── Supervisor ───────────────────────────────────────────────────────────────
-function loadSupervisorPanel() {
-  const sup = getSupervisor();
-  document.getElementById('supervisorName').value = sup.name || '';
-  document.getElementById('supervisorDate').value = sup.date || '';
-}
-
-let supTimer = null;
-['supervisorName', 'supervisorDate'].forEach(id => {
-  document.getElementById(id).addEventListener('input', () => {
-    clearTimeout(supTimer);
-    supTimer = setTimeout(() => {
-      saveSupervisorData({
-        name: document.getElementById('supervisorName').value,
-        date: document.getElementById('supervisorDate').value,
-      });
-    }, 800);
-  });
-});
-
-// ─── Impressão ────────────────────────────────────────────────────────────────
-function printPAC() {
-  const cfg     = EQUIP_CFG[state.equip];
-  const entries = getEntries();
-  const sup     = getSupervisor();
-  const days    = new Date(state.year, state.month + 1, 0).getDate();
-
-  function printPeriod(e, period) {
-    if (!e || !e[period]) return '<td></td><td></td>';
-    const p       = e[period];
-    const hasTemp = p.temp !== '' && p.temp !== null && p.temp !== undefined;
-    if (!hasTemp) return `<td>${p.hora || ''}</td><td></td>`;
-    const t     = parseFloat(p.temp);
-    const alarm = !cfg.isOk(t) && !cfg.isWarn(t);
-    return `<td>${p.hora || ''}</td><td${alarm ? ' class="print-alarm"' : ''}>${t.toFixed(1)}°C</td>`;
-  }
-
-  let rows = '';
-  for (let d = 1; d <= days; d++) {
-    const ds   = `${state.year}-${String(state.month + 1).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
-    const dFmt = `${String(d).padStart(2, '0')}/${String(state.month + 1).padStart(2, '0')}/${state.year}`;
-    const e    = entries[ds];
-    rows += `<tr>
-      <td>${dFmt}</td>
-      ${printPeriod(e, 'manha')}
-      ${printPeriod(e, 'tarde')}
-      ${printPeriod(e, 'noite')}
-      <td>${e ? (e.responsavel || '') : ''}</td>
-    </tr>`;
-  }
-
-  const supDate = sup.date ? sup.date.split('-').reverse().join('/') : '';
-
-  document.getElementById('printView').innerHTML = `
-<div class="pac-doc">
-  <table class="pac-header-table">
-    <tr>
-      <td class="logo-cell" style="width:130px">
-        <div class="print-logo">
-          <span class="logo-big">REI</span><br>
-          <span class="logo-sub">da Mussarela<br>e do Pão de Queijo</span>
-        </div>
-      </td>
-      <td class="title-cell">PAC - Planilha de monitoramento de temperatura.</td>
-      <td class="meta-cell">
-        <div>Data de emissão: 01/04/26</div>
-        <div>Revisão nº: &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; Data:</div>
-        <div>Documento: 01</div>
-      </td>
-    </tr>
-  </table>
-  <table class="pac-info-table">
-    <tr><td><strong>Responsável:</strong> Setor de produção</td></tr>
-    <tr><td><strong>Frequência:</strong> 3 X ao dia</td></tr>
-    <tr><td><strong>Objetivo:</strong> Monitorar temperatura da rede de frio</td></tr>
-    <tr><td><strong>Temperatura de referência:</strong> ${cfg.refTemp}</td></tr>
-    <tr><td><strong><u>Equipamento: ${cfg.label}</u></strong></td></tr>
-  </table>
-  <table class="pac-data-table">
-    <thead>
-      <tr>
-        <th rowspan="2" style="width:80px">Data: d/m/a</th>
-        <th colspan="2">Manhã</th>
-        <th colspan="2">Tarde</th>
-        <th colspan="2">Noite</th>
-        <th rowspan="2">Responsável</th>
-      </tr>
-      <tr>
-        <th>Horário</th><th>Temperatura</th>
-        <th>Horário</th><th>Temperatura</th>
-        <th>Horário</th><th>Temperatura</th>
-      </tr>
-    </thead>
-    <tbody>${rows}</tbody>
-  </table>
-  <div class="pac-footer">
-    <div>Nome do supervisor: ${sup.name || ''}</div>
-    <div>Assinatura:</div>
-    <div>Data: ${supDate}</div>
-  </div>
-</div>`;
-
-  window.print();
-}
-
-// ─── Modal de Lançamento em Lote ─────────────────────────────────────────────
-
-// Gera todas as datas entre dois strings YYYY-MM-DD
 function dateRange(fromStr, toStr) {
   const dates = [];
-  const cur   = new Date(fromStr + 'T00:00:00');
-  const end   = new Date(toStr   + 'T00:00:00');
-  if (isNaN(cur) || isNaN(end) || cur > end) return dates;
+  const cur = new Date(fromStr + 'T00:00:00');
+  const end = new Date(toStr   + 'T00:00:00');
   while (cur <= end) {
-    dates.push(cur.toISOString().slice(0, 10));
-    cur.setDate(cur.getDate() + 1);
+    dates.push(`${cur.getFullYear()}-${padZ(cur.getMonth()+1)}-${padZ(cur.getDate())}`);
+    cur.setDate(cur.getDate()+1);
   }
   return dates;
 }
 
-// Busca entry de qualquer mês (olha no localCache ou localStorage)
-function getEntryForDate(ds) {
-  const mk  = ds.slice(0, 7);                       // YYYY-MM
-  const key = `${state.equip}_${mk}`;
-  const all = lsAll();
-  const src = (all[key] && all[key].entries) || {};
-  return src[ds] || null;
+function formatDateBR(ds) {
+  if (!ds) return '';
+  const [y, m, d] = ds.split('-');
+  return `${d}/${m}/${y}`;
 }
 
-function buildBulkRows(fromStr, toStr) {
-  const cfg    = EQUIP_CFG[state.equip];
-  const tbody  = document.getElementById('bulkBody');
-  const dates  = dateRange(fromStr, toStr);
+function tempClass(equip, val) {
+  const v = parseFloat(val);
+  if (isNaN(v)) return '';
+  const cfg = EQUIP_CONFIG[equip];
+  if (v >= cfg.min && v <= cfg.max) return 't-ok';
+  if (equip === 'refrig') return (v > cfg.max && v <= cfg.max + 2) ? 't-warn' : 't-alarm';
+  if (v > cfg.max) return 't-alarm';
+  return 't-ok';
+}
+
+function setSyncStatus(state, label) {
+  const el = document.getElementById('syncStatus');
+  const lb = document.getElementById('syncLabel');
+  if (el) el.className = 'sync-status ' + state;
+  if (lb) lb.textContent = label;
+}
+
+function show(id) { const el = document.getElementById(id); if (el) el.style.display = ''; }
+function hide(id) { const el = document.getElementById(id); if (el) el.style.display = 'none'; }
+
+// ── PERMISSÕES ────────────────────────────────────────
+function canDo(perm) {
+  return !!(userProfile && userProfile.ativo && userProfile.permissoes && userProfile.permissoes[perm]);
+}
+
+function applyPermissions() {
+  const showPerm = (id, perm) => {
+    const el = document.getElementById(id);
+    if (el) el.style.display = canDo(perm) ? '' : 'none';
+  };
+  showPerm('btnBulk',      'lancamentoLote');
+  showPerm('btnTemplate',  'importar');
+  showPerm('btnImport',    'importar');
+  showPerm('btnExport',    'exportar');
+  showPerm('btnPrint',     'imprimir');
+  showPerm('btnAdminPanel','admin');
+
+  const fab = document.getElementById('fabAdd');
+  if (fab) fab.style.display = canDo('novaLeitura') ? 'flex' : 'none';
+
+  const nameEl = document.getElementById('userName');
+  const roleEl = document.getElementById('userRole');
+  if (nameEl && userProfile) nameEl.textContent = userProfile.nome || '';
+  if (roleEl && userProfile) roleEl.textContent = userProfile.cargo || '';
+}
+
+// ── AUTH FLOW ─────────────────────────────────────────
+function showLoginScreen() {
+  hide('app'); hide('pendingScreen');
+  show('loginScreen');
+  show('panelLogin'); hide('panelRegister');
+  clearAuthError();
+}
+
+function showApp() {
+  hide('loginScreen'); hide('pendingScreen');
+  show('app');
+  applyPermissions();
+  subscribeMonth();
+}
+
+function showPendingScreen() {
+  hide('loginScreen'); hide('app');
+  show('pendingScreen');
+}
+
+function showAuthError(msg) {
+  const el = document.getElementById('loginError');
+  if (el) { el.textContent = msg; el.style.display = ''; }
+}
+
+function clearAuthError() {
+  const el = document.getElementById('loginError');
+  if (el) el.style.display = 'none';
+}
+
+async function doLogin() {
+  const email = (document.getElementById('loginEmail')?.value || '').trim();
+  const pass  =  document.getElementById('loginPassword')?.value || '';
+  clearAuthError();
+  if (!email || !pass) { showAuthError('Preencha e-mail e senha.'); return; }
+
+  const btn = document.getElementById('btnLogin');
+  if (btn) { btn.disabled = true; btn.textContent = 'Entrando...'; }
+
+  try {
+    await auth.signInWithEmailAndPassword(email, pass);
+  } catch(e) {
+    const msgs = {
+      'auth/user-not-found':     'Usuário não encontrado.',
+      'auth/wrong-password':     'Senha incorreta.',
+      'auth/invalid-email':      'E-mail inválido.',
+      'auth/invalid-credential': 'E-mail ou senha incorretos.',
+      'auth/too-many-requests':  'Muitas tentativas. Tente novamente mais tarde.',
+    };
+    showAuthError(msgs[e.code] || 'Erro: ' + e.message);
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = 'Entrar'; }
+  }
+}
+
+async function doRegister() {
+  const nome  = (document.getElementById('regNome')?.value || '').trim();
+  const email = (document.getElementById('regEmail')?.value || '').trim();
+  const pass  =  document.getElementById('regPassword')?.value || '';
+  clearAuthError();
+
+  if (!nome)       { showAuthError('Informe seu nome.'); return; }
+  if (!email)      { showAuthError('Informe seu e-mail.'); return; }
+  if (pass.length < 6) { showAuthError('Senha deve ter pelo menos 6 caracteres.'); return; }
+
+  const btn = document.getElementById('btnRegister');
+  if (btn) { btn.disabled = true; btn.textContent = 'Criando conta...'; }
+
+  try {
+    const snap    = await db.collection('usuarios').limit(1).get();
+    const isFirst = snap.empty;
+    const cred    = await auth.createUserWithEmailAndPassword(email, pass);
+    const uid     = cred.user.uid;
+    const cargo   = isFirst ? 'admin' : 'operador';
+
+    await db.collection('usuarios').doc(uid).set({
+      nome,
+      email,
+      cargo,
+      ativo: isFirst,
+      permissoes: { ...DEFAULT_PERMS[cargo] },
+      criadoEm: firebase.firestore.FieldValue.serverTimestamp(),
+    });
+  } catch(e) {
+    const msgs = {
+      'auth/email-already-in-use': 'Este e-mail já está cadastrado.',
+      'auth/invalid-email':        'E-mail inválido.',
+      'auth/weak-password':        'Senha muito fraca.',
+    };
+    showAuthError(msgs[e.code] || 'Erro: ' + e.message);
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = 'Criar conta'; }
+  }
+}
+
+async function doLogout() {
+  if (fsUnsubscribe) { fsUnsubscribe(); fsUnsubscribe = null; }
+  await auth.signOut();
+}
+
+function initAuth() {
+  auth.onAuthStateChanged(async user => {
+    if (user) {
+      currentUser = user;
+      try {
+        const doc = await db.collection('usuarios').doc(user.uid).get();
+        userProfile = doc.exists ? doc.data() : null;
+      } catch(e) {
+        userProfile = null;
+      }
+
+      if (!userProfile) {
+        showAuthError('Perfil não encontrado. Contate o administrador.');
+        await auth.signOut();
+        return;
+      }
+
+      if (!userProfile.ativo) {
+        showPendingScreen();
+      } else {
+        showApp();
+      }
+    } else {
+      currentUser = null;
+      userProfile = null;
+      if (fsUnsubscribe) { fsUnsubscribe(); fsUnsubscribe = null; }
+      showLoginScreen();
+    }
+  });
+}
+
+// ── FIRESTORE DATA ────────────────────────────────────
+function fsDocRef(equip, year, month) {
+  return db.collection('pac_monitoramento').doc(monthKey(equip, year, month));
+}
+
+async function fsWrite() {
+  setSyncStatus('syncing', 'Salvando...');
+  try {
+    await fsDocRef(currentEquip, currentYear, currentMonth).set(
+      { entries: localCache.entries, supervisor: localCache.supervisor || {} }
+    );
+    lsSaveCurrent();
+    setSyncStatus('synced', 'Salvo');
+  } catch(e) {
+    setSyncStatus('offline', 'Offline');
+    lsSaveCurrent();
+  }
+}
+
+function subscribeMonth() {
+  if (fsUnsubscribe) { fsUnsubscribe(); fsUnsubscribe = null; }
+  lsLoadCurrent();
+  renderAll();
+  setSyncStatus('syncing', 'Conectando...');
+
+  fsUnsubscribe = fsDocRef(currentEquip, currentYear, currentMonth)
+    .onSnapshot(snap => {
+      if (snap.exists) {
+        const d = snap.data();
+        localCache.entries    = d.entries    || {};
+        localCache.supervisor = d.supervisor || {};
+        lsSaveCurrent();
+      }
+      renderAll();
+      setSyncStatus('synced', 'Sincronizado');
+    }, () => {
+      setSyncStatus('offline', 'Offline');
+      renderAll();
+    });
+}
+
+async function saveEntry(dateStr, entry) {
+  localCache.entries[dateStr] = entry;
+  lsSaveCurrent();
+  renderAll();
+  await fsWrite();
+}
+
+async function deleteEntry(dateStr) {
+  delete localCache.entries[dateStr];
+  lsSaveCurrent();
+  renderAll();
+  await fsWrite();
+}
+
+function getEntryForDate(ds) {
+  const [y, m] = ds.split('-');
+  if (parseInt(y) === currentYear && parseInt(m) === currentMonth) {
+    return localCache.entries[ds] || null;
+  }
+  try {
+    const raw = localStorage.getItem(lsKey(currentEquip, parseInt(y), parseInt(m)));
+    if (raw) {
+      const obj = JSON.parse(raw);
+      return obj.entries?.[ds] || null;
+    }
+  } catch(e) {}
+  return null;
+}
+
+// ── RENDER ────────────────────────────────────────────
+function renderAll() {
+  renderMonthLabel();
+  renderTable();
+}
+
+function renderMonthLabel() {
+  const names = ['Janeiro','Fevereiro','Março','Abril','Maio','Junho',
+                  'Julho','Agosto','Setembro','Outubro','Novembro','Dezembro'];
+  const el = document.getElementById('monthLabel');
+  if (el) el.textContent = `${names[currentMonth-1]} ${currentYear}`;
+
+  const cfg = EQUIP_CONFIG[currentEquip];
+  const rl  = document.getElementById('refTempLabel');
+  const el2 = document.getElementById('equipLabel');
+  if (rl)  rl.textContent  = cfg.ref;
+  if (el2) el2.textContent = cfg.label;
+}
+
+function renderTable() {
+  const tbody = document.getElementById('pacBody');
+  if (!tbody) return;
   tbody.innerHTML = '';
 
-  if (dates.length === 0) {
-    tbody.innerHTML = '<tr><td colspan="9" style="text-align:center;padding:20px;color:var(--muted)">Período inválido.</td></tr>';
+  const todayStr = today();
+  const days     = daysInMonth(currentYear, currentMonth);
+  const canDel   = canDo('excluir');
+  const canEdit  = canDo('novaLeitura');
+
+  for (let d = 1; d <= days; d++) {
+    const ds    = `${currentYear}-${padZ(currentMonth)}-${padZ(d)}`;
+    const dt    = new Date(ds + 'T00:00:00');
+    const wd    = dt.getDay();
+    const entry = localCache.entries[ds] || null;
+    const dow   = ['Dom','Seg','Ter','Qua','Qui','Sex','Sáb'][wd];
+
+    const tr = document.createElement('tr');
+
+    // Coluna Data
+    const tdDate = document.createElement('td');
+    tdDate.className = 'td-date' +
+      (ds === todayStr    ? ' is-today'   : '') +
+      (wd === 0 || wd === 6 ? ' is-weekend' : '');
+    tdDate.innerHTML = `<span class="day-num">${padZ(d)}</span> <span style="font-size:.72rem;color:#90A4AE">${dow}</span>`;
+    tr.appendChild(tdDate);
+
+    // Turnos
+    ['manha','tarde','noite'].forEach(t => {
+      const hora = entry?.[t]?.hora || '';
+      const temp = entry?.[t]?.temp;
+
+      const tdH = document.createElement('td');
+      tdH.textContent = hora || '—';
+      tr.appendChild(tdH);
+
+      const tdT = document.createElement('td');
+      tdT.className = 'td-temp';
+      if (temp !== undefined && temp !== '') {
+        const cls = tempClass(currentEquip, temp);
+        tdT.className += ' ' + cls;
+        tdT.textContent = parseFloat(temp).toFixed(1) + '°';
+      } else {
+        const filled = !!hora;
+        tdT.innerHTML = `<span class="turn-badge ${filled ? 'filled' : 'empty'}">${filled ? 'OK' : '—'}</span>`;
+      }
+      tr.appendChild(tdT);
+    });
+
+    // Responsável
+    const tdResp = document.createElement('td');
+    tdResp.className = 'hide-mobile';
+    tdResp.textContent = entry?.responsavel || '';
+    tr.appendChild(tdResp);
+
+    // Ações
+    const tdAct  = document.createElement('td');
+    tdAct.className = 'no-print';
+    const actDiv = document.createElement('div');
+    actDiv.className = 'actions-cell';
+
+    if (canEdit) {
+      const btnE = document.createElement('button');
+      btnE.className   = 'btn-table btn-edit';
+      btnE.textContent = entry ? '✏ Editar' : '+ Incluir';
+      btnE.addEventListener('click', () => startEdit(ds));
+      actDiv.appendChild(btnE);
+    }
+
+    if (canDel && entry) {
+      const btnD = document.createElement('button');
+      btnD.className   = 'btn-table btn-del';
+      btnD.textContent = '🗑';
+      btnD.title = 'Excluir';
+      btnD.addEventListener('click', () => {
+        if (confirm(`Excluir leitura de ${formatDateBR(ds)}?`)) deleteEntry(ds);
+      });
+      actDiv.appendChild(btnD);
+    }
+
+    tdAct.appendChild(actDiv);
+    tr.appendChild(tdAct);
+    tbody.appendChild(tr);
+  }
+}
+
+// ── FORMULÁRIO INDIVIDUAL ─────────────────────────────
+function startEdit(dateStr) {
+  if (!canDo('novaLeitura')) return;
+  const entry   = localCache.entries[dateStr] || null;
+  const isToday = dateStr === today();
+
+  document.getElementById('fDate').value = dateStr;
+  document.getElementById('fResp').value = entry?.responsavel || (userProfile?.nome || '');
+  document.getElementById('fDate').readOnly = false;
+
+  ['manha','tarde','noite'].forEach(t => {
+    const CAP = t.charAt(0).toUpperCase() + t.slice(1);
+    const e   = entry?.[t] || {};
+    document.getElementById(`f${CAP}Hora`).value = e.hora || '';
+    document.getElementById(`f${CAP}Temp`).value = (e.temp !== undefined && e.temp !== '') ? e.temp : '';
+  });
+
+  if (isToday) {
+    const p   = currentPeriod();
+    const CAP = p.charAt(0).toUpperCase() + p.slice(1);
+    const el  = document.getElementById(`f${CAP}Hora`);
+    if (el && !el.value) {
+      const now = new Date();
+      el.value  = `${padZ(now.getHours())}:${padZ(now.getMinutes())}`;
+    }
+  }
+
+  document.getElementById('formTitle').textContent = entry
+    ? `Editar — ${formatDateBR(dateStr)}`
+    : `Nova leitura — ${formatDateBR(dateStr)}`;
+  document.getElementById('entryForm').style.display = '';
+  document.getElementById('entryForm').scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+}
+
+function startEditBlank() {
+  if (!canDo('novaLeitura')) return;
+  const t = today();
+  const [y, m] = t.split('-').map(Number);
+  const isCurrent = (y === currentYear && m === currentMonth);
+  const defaultDate = isCurrent ? t : `${currentYear}-${padZ(currentMonth)}-01`;
+
+  document.getElementById('fDate').value = defaultDate;
+  document.getElementById('fResp').value = userProfile?.nome || '';
+  ['Manha','Tarde','Noite'].forEach(x => {
+    document.getElementById(`f${x}Hora`).value = '';
+    document.getElementById(`f${x}Temp`).value = '';
+  });
+
+  if (isCurrent) {
+    const p   = currentPeriod();
+    const CAP = p.charAt(0).toUpperCase() + p.slice(1);
+    const now = new Date();
+    document.getElementById(`f${CAP}Hora`).value = `${padZ(now.getHours())}:${padZ(now.getMinutes())}`;
+  }
+
+  document.getElementById('formTitle').textContent = 'Nova leitura';
+  document.getElementById('entryForm').style.display = '';
+  document.getElementById('entryForm').scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+}
+
+function closeForm() {
+  document.getElementById('entryForm').style.display = 'none';
+}
+
+async function doSave() {
+  const dateStr = document.getElementById('fDate').value;
+  if (!dateStr) { alert('Selecione uma data.'); return; }
+
+  const entry = {
+    responsavel: document.getElementById('fResp').value.trim(),
+    manha: { hora: document.getElementById('fManhaHora').value, temp: document.getElementById('fManhaTemp').value },
+    tarde: { hora: document.getElementById('fTardeHora').value, temp: document.getElementById('fTardeTemp').value },
+    noite: { hora: document.getElementById('fNoiteHora').value, temp: document.getElementById('fNoiteTemp').value },
+    atualizadoEm:  new Date().toISOString(),
+    atualizadoPor: userProfile?.nome || '',
+  };
+
+  const [ey, em] = dateStr.split('-').map(Number);
+  if (ey !== currentYear || em !== currentMonth) {
+    const key = lsKey(currentEquip, ey, em);
+    let cache = { entries: {}, supervisor: {} };
+    try { const r = localStorage.getItem(key); if (r) cache = JSON.parse(r); } catch(e) {}
+    cache.entries[dateStr] = entry;
+    localStorage.setItem(key, JSON.stringify(cache));
+    await db.collection('pac_monitoramento').doc(monthKey(currentEquip, ey, em)).set({ entries: cache.entries }, { merge: false });
+    closeForm();
     return;
   }
 
+  await saveEntry(dateStr, entry);
+  closeForm();
+}
+
+// ── MODAL LANÇAMENTO EM LOTE ──────────────────────────
+function openBulkModal() {
+  if (!canDo('lancamentoLote')) return;
+  const y = currentYear, m = currentMonth;
+  const days = daysInMonth(y, m);
+  document.getElementById('qDateFrom').value = `${y}-${padZ(m)}-01`;
+  document.getElementById('qDateTo').value   = `${y}-${padZ(m)}-${padZ(days)}`;
+  document.getElementById('bulkModalTitle').textContent = `Lançamento em Lote — ${EQUIP_CONFIG[currentEquip].label}`;
+  buildBulkRows(`${y}-${padZ(m)}-01`, `${y}-${padZ(m)}-${padZ(days)}`);
+  document.getElementById('bulkModal').style.display = 'flex';
+}
+
+function buildBulkRows(fromStr, toStr) {
+  const dates = dateRange(fromStr, toStr);
+  const tbody = document.getElementById('bulkBody');
+  if (!tbody) return;
+  tbody.innerHTML = '';
+
   let lastMonth = '';
-
   dates.forEach(ds => {
-    const month = ds.slice(0, 7);
-    const [y, m, d] = ds.split('-');
-    const dFmt = `${d}/${m}/${y}`;
+    const [y, m] = ds.split('-');
+    const mLabel = `${['Jan','Fev','Mar','Abr','Mai','Jun','Jul','Ago','Set','Out','Nov','Dez'][parseInt(m)-1]} ${y}`;
 
-    // Separador de mês
-    if (month !== lastMonth) {
-      lastMonth = month;
-      const [my, mm] = month.split('-');
-      const sep = document.createElement('tr');
-      sep.className = 'bulk-month-sep';
-      sep.innerHTML = `<td colspan="9">${MONTHS_PT[parseInt(mm)-1]} ${my}</td>`;
-      tbody.appendChild(sep);
+    if (mLabel !== lastMonth) {
+      lastMonth = mLabel;
+      const sepTr = document.createElement('tr');
+      const sepTd = document.createElement('td');
+      sepTd.colSpan  = 9;
+      sepTd.className = 'td-month-sep';
+      sepTd.textContent = mLabel;
+      sepTr.appendChild(sepTd);
+      tbody.appendChild(sepTr);
     }
 
-    const e   = getEntryForDate(ds) || {};
-    const val = (obj, k) =>
-      (obj && obj[k] !== undefined && obj[k] !== null && obj[k] !== '') ? obj[k] : '';
+    const entry = getEntryForDate(ds) || null;
+    const dt    = new Date(ds + 'T00:00:00');
+    const wd    = dt.getDay();
+    const dow   = ['Dom','Seg','Ter','Qua','Qui','Sex','Sáb'][wd];
 
     const tr = document.createElement('tr');
     tr.dataset.date = ds;
 
-    tr.innerHTML = `
-      <td class="bulk-date-cell">${dFmt}</td>
-      <td><input type="time"   class="bh" data-p="manha" value="${val(e.manha,'hora')}" /></td>
-      <td class="bt"><input type="number" class="bt-in" data-p="manha" step="0.1" placeholder="°C" value="${val(e.manha,'temp')}" /></td>
-      <td><input type="time"   class="bh" data-p="tarde" value="${val(e.tarde,'hora')}" /></td>
-      <td class="bt"><input type="number" class="bt-in" data-p="tarde" step="0.1" placeholder="°C" value="${val(e.tarde,'temp')}" /></td>
-      <td><input type="time"   class="bh" data-p="noite" value="${val(e.noite,'hora')}" /></td>
-      <td class="bt"><input type="number" class="bt-in" data-p="noite" step="0.1" placeholder="°C" value="${val(e.noite,'temp')}" /></td>
-      <td><input type="text"   class="br" placeholder="Responsável" value="${e.responsavel||''}" /></td>
-      <td class="col-clear"><button class="btn-clear-row" title="Limpar linha">✕</button></td>`;
+    const tdDate = document.createElement('td');
+    tdDate.style.cssText = 'padding:4px 8px;font-weight:700;white-space:nowrap';
+    tdDate.innerHTML = `${formatDateBR(ds)} <span style="font-size:.7rem;color:#90A4AE">${dow}</span>`;
+    tr.appendChild(tdDate);
+
+    ['manha','tarde','noite'].forEach(t => {
+      const e = entry?.[t] || {};
+
+      const tdH = document.createElement('td');
+      const inH = document.createElement('input');
+      inH.type  = 'time';
+      inH.value = e.hora || '';
+      inH.dataset.field = `${ds}|${t}|hora`;
+      tdH.appendChild(inH);
+      tr.appendChild(tdH);
+
+      const tdT = document.createElement('td');
+      const inT = document.createElement('input');
+      inT.type        = 'number';
+      inT.step        = '0.1';
+      inT.placeholder = '°C';
+      inT.value       = (e.temp !== undefined && e.temp !== '') ? e.temp : '';
+      inT.dataset.field = `${ds}|${t}|temp`;
+      inT.className   = tempClass(currentEquip, e.temp);
+      inT.addEventListener('input', () => { inT.className = tempClass(currentEquip, inT.value); });
+      tdT.appendChild(inT);
+      tr.appendChild(tdT);
+    });
+
+    const tdResp = document.createElement('td');
+    const inResp = document.createElement('input');
+    inResp.type        = 'text';
+    inResp.placeholder = 'Responsável';
+    inResp.value       = entry?.responsavel || '';
+    inResp.dataset.field = `${ds}|resp`;
+    tdResp.appendChild(inResp);
+    tr.appendChild(tdResp);
+
+    const tdCl  = document.createElement('td');
+    const btnCl = document.createElement('button');
+    btnCl.className   = 'btn-bulk-clear';
+    btnCl.textContent = '✕';
+    btnCl.title = 'Limpar linha';
+    btnCl.addEventListener('click', () => {
+      tr.querySelectorAll('input').forEach(i => { i.value = ''; i.className = ''; });
+    });
+    tdCl.appendChild(btnCl);
+    tr.appendChild(tdCl);
 
     tbody.appendChild(tr);
   });
-
-  // Cor ao vivo
-  tbody.querySelectorAll('.bt-in').forEach(inp => {
-    colorBulkTemp(inp, cfg);
-    inp.addEventListener('input', () => colorBulkTemp(inp, cfg));
-  });
-
-  // Limpar linha
-  tbody.querySelectorAll('.btn-clear-row').forEach(btn => {
-    btn.addEventListener('click', () => {
-      const row = btn.closest('tr');
-      row.querySelectorAll('input').forEach(i => { i.value = ''; });
-      row.querySelectorAll('.bt').forEach(td => { td.className = 'bt'; });
-    });
-  });
 }
 
-function openBulkModal() {
-  const cfg = EQUIP_CFG[state.equip];
+async function saveBulkEntries() {
+  const rows = document.querySelectorAll('#bulkBody tr[data-date]');
+  if (!rows.length) { alert('Nenhuma linha para salvar.'); return; }
 
-  document.getElementById('bulkModalTitle').textContent =
-    `Lançamento em Lote — ${cfg.label}`;
+  const btn = document.getElementById('btnBulkSave');
+  if (btn) { btn.disabled = true; btn.textContent = 'Salvando...'; }
 
-  // Datas padrão: primeiro e último dia do mês exibido
-  const firstDay = `${state.year}-${String(state.month+1).padStart(2,'0')}-01`;
-  const lastDay  = new Date(state.year, state.month+1, 0).getDate();
-  const lastDayStr = `${state.year}-${String(state.month+1).padStart(2,'0')}-${String(lastDay).padStart(2,'0')}`;
+  const byMonth = {};
+  rows.forEach(tr => {
+    const ds = tr.dataset.date;
+    const [y, m] = ds.split('-');
+    const mk = monthKey(currentEquip, parseInt(y), parseInt(m));
+    if (!byMonth[mk]) byMonth[mk] = { year: parseInt(y), month: parseInt(m), entries: {} };
 
-  document.getElementById('qDateFrom').value = firstDay;
-  document.getElementById('qDateTo').value   = lastDayStr;
+    const get = field => tr.querySelector(`[data-field="${field}"]`)?.value || '';
+    const manhaH = get(`${ds}|manha|hora`), manhaT = get(`${ds}|manha|temp`);
+    const tardeH = get(`${ds}|tarde|hora`), tardeT = get(`${ds}|tarde|temp`);
+    const noiteH = get(`${ds}|noite|hora`), noiteT = get(`${ds}|noite|temp`);
+    const resp   = get(`${ds}|resp`);
 
-  buildBulkRows(firstDay, lastDayStr);
-  document.getElementById('bulkModal').style.display = 'flex';
-}
+    const hasData = manhaH || tardeH || noiteH || manhaT || tardeT || noiteT;
+    if (!hasData) return;
 
-function colorBulkTemp(inp, cfg) {
-  const td = inp.parentElement;
-  const t  = parseFloat(inp.value);
-  td.className = 'bt';
-  if (!inp.value || isNaN(t)) return;
-  if (cfg.isOk(t))    td.classList.add('t-ok');
-  else if (cfg.isWarn(t)) td.classList.add('t-warn');
-  else td.classList.add('t-alarm');
-}
-
-function closeBulkModal() {
-  document.getElementById('bulkModal').style.display = 'none';
-}
-
-// Registra eventos do modal — null-safe: se o HTML for antigo, não quebra o script
-function setupBulkModalEvents() {
-  const el = id => document.getElementById(id);
-
-  // Aplicar horário padrão nas células vazias
-  el('btnFillHoras')?.addEventListener('click', () => {
-    const qM = el('qManhaHora').value;
-    const qT = el('qTardeHora').value;
-    const qN = el('qNoiteHora').value;
-    document.querySelectorAll('#bulkBody tr').forEach(tr => {
-      tr.querySelectorAll('.bh').forEach(inp => {
-        if (inp.value) return;
-        const p = inp.dataset.p;
-        if (p === 'manha' && qM) inp.value = qM;
-        if (p === 'tarde'  && qT) inp.value = qT;
-        if (p === 'noite'  && qN) inp.value = qN;
-      });
-    });
+    byMonth[mk].entries[ds] = {
+      responsavel: resp,
+      manha: { hora: manhaH, temp: manhaT },
+      tarde: { hora: tardeH, temp: tardeT },
+      noite: { hora: noiteH, temp: noiteT },
+      atualizadoEm:  new Date().toISOString(),
+      atualizadoPor: userProfile?.nome || '',
+    };
   });
 
-  // Aplicar responsável padrão nas células vazias
-  el('btnFillResp')?.addEventListener('click', () => {
-    const qR = el('qResp').value.trim();
-    if (!qR) return;
-    document.querySelectorAll('#bulkBody .br').forEach(inp => {
-      if (!inp.value) inp.value = qR;
-    });
-  });
+  try {
+    for (const [mk, data] of Object.entries(byMonth)) {
+      const { year, month, entries } = data;
+      const key   = lsKey(currentEquip, year, month);
+      let cache   = { entries: {}, supervisor: {} };
+      try { const r = localStorage.getItem(key); if (r) cache = JSON.parse(r); } catch(e) {}
+      cache.entries = { ...cache.entries, ...entries };
 
-  // Gerar tabela com período personalizado
-  el('btnSetRange')?.addEventListener('click', () => {
-    const from = el('qDateFrom').value;
-    const to   = el('qDateTo').value;
-    if (!from || !to) { alert('Selecione as datas de início e fim.'); return; }
-    buildBulkRows(from, to);
-  });
+      if (year === currentYear && month === currentMonth) {
+        localCache.entries    = cache.entries;
+        localCache.supervisor = cache.supervisor;
+      }
 
-  // Salvar tudo do modal — suporta múltiplos meses
-  el('btnBulkSave')?.addEventListener('click', async () => {
-    const rows = document.querySelectorAll('#bulkBody tr[data-date]');
-    let saved = 0;
+      localStorage.setItem(key, JSON.stringify(cache));
+      await db.collection('pac_monitoramento').doc(mk).set({ entries: cache.entries });
+    }
 
-    // Agrupa entradas por mês (YYYY-MM)
-    const byMonth = {};
-
-    rows.forEach(tr => {
-      const ds = tr.dataset.date;
-      if (!ds) return;
-
-      const hora = p => tr.querySelector(`.bh[data-p="${p}"]`).value;
-      const temp = p => tr.querySelector(`.bt-in[data-p="${p}"]`).value;
-      const resp = tr.querySelector('.br').value.trim();
-
-      const hasAny = temp('manha') || temp('tarde') || temp('noite') || resp;
-      if (!hasAny) return;
-
-      const mk = ds.slice(0, 7);
-      if (!byMonth[mk]) byMonth[mk] = {};
-      byMonth[mk][ds] = {
-        responsavel: resp,
-        manha: { hora: hora('manha'), temp: temp('manha') },
-        tarde: { hora: hora('tarde'), temp: temp('tarde') },
-        noite: { hora: hora('noite'), temp: temp('noite') },
-      };
-      saved++;
-    });
-
-    if (saved === 0) { alert('Nenhum dado preenchido para salvar.'); return; }
-
-    const btn = el('btnBulkSave');
-    btn.disabled = true;
-    btn.textContent = 'Salvando...';
-
-    setSyncStatus('syncing', 'Salvando...');
-
-    // Salva cada mês no localStorage e Firestore
-    const allLS = lsAll();
-    const promises = Object.entries(byMonth).map(async ([mk, newEntries]) => {
-      const docKey = `${state.equip}_${mk}`;
-
-      // Merge com dados existentes no localStorage
-      const existing = (allLS[docKey] && allLS[docKey].entries) || {};
-      const merged   = { ...existing, ...newEntries };
-
-      allLS[docKey] = { entries: merged, supervisor: (allLS[docKey] && allLS[docKey].supervisor) || {} };
-
-      // Se é o mês atual, atualiza o localCache também
-      if (mk === monthKey()) localCache.entries = merged;
-
-      // Salva no Firestore
-      try {
-        await db.collection(COL).doc(docKey).set({
-          entries:    merged,
-          supervisor: allLS[docKey].supervisor,
-        });
-      } catch (_) { /* salvo localmente */ }
-    });
-
-    try { localStorage.setItem(LS_KEY, JSON.stringify(allLS)); } catch (_) {}
-    await Promise.all(promises);
-
-    renderTable();
-    closeBulkModal();
-    setSyncStatus('synced', 'Sincronizado');
-
-    btn.disabled = false;
-    btn.textContent = '💾 Salvar Tudo';
-    alert(`✅ ${saved} dia(s) salvos com sucesso!`);
-  });
-
-  el('btnBulkCancel')?.addEventListener('click', closeBulkModal);
-  el('bulkModalClose')?.addEventListener('click', closeBulkModal);
-  el('bulkModal')?.addEventListener('click', e => {
-    if (e.target === el('bulkModal')) closeBulkModal();
-  });
-}
-
-setupBulkModalEvents();
-
-// ─── Baixar Modelo de Planilha ────────────────────────────────────────────────
-function downloadTemplate() {
-  const cfg  = EQUIP_CFG[state.equip];
-  const days = new Date(state.year, state.month + 1, 0).getDate();
-  const mk   = String(state.month + 1).padStart(2, '0');
-
-  const rows = [
-    // Cabeçalho informativo
-    [`PAC - Planilha de Monitoramento de Temperatura`, '', '', '', '', '', '', ''],
-    [`Equipamento: ${cfg.label}`, `Referência: ${cfg.refTemp}`, '', '', '', '', '', ''],
-    [`Mês: ${MONTHS_PT[state.month]} ${state.year}`, '', '', '', '', '', '', ''],
-    [`INSTRUÇÕES: Preencha as colunas abaixo. Não altere a linha de cabeçalhos. Salve como CSV UTF-8 para importar.`, '', '', '', '', '', '', ''],
-    ['', '', '', '', '', '', '', ''],
-    // Cabeçalhos das colunas
-    ['Data', 'Manhã - Horário', 'Manhã - Temperatura °C',
-     'Tarde - Horário', 'Tarde - Temperatura °C',
-     'Noite - Horário', 'Noite - Temperatura °C', 'Responsável'],
-  ];
-
-  // Dias do mês — pré-preenchidos com os dados existentes
-  const entries = getEntries();
-  for (let d = 1; d <= days; d++) {
-    const ds  = `${state.year}-${mk}-${String(d).padStart(2,'0')}`;
-    const e   = entries[ds] || {};
-    const dFmt = `${String(d).padStart(2,'0')}/${mk}/${state.year}`;
-    rows.push([
-      dFmt,
-      (e.manha && e.manha.hora)  || '',
-      (e.manha && e.manha.temp !== '' && e.manha.temp !== undefined) ? e.manha.temp : '',
-      (e.tarde && e.tarde.hora)  || '',
-      (e.tarde && e.tarde.temp !== '' && e.tarde.temp !== undefined) ? e.tarde.temp : '',
-      (e.noite && e.noite.hora)  || '',
-      (e.noite && e.noite.temp !== '' && e.noite.temp !== undefined) ? e.noite.temp : '',
-      e.responsavel || '',
-    ]);
+    document.getElementById('bulkModal').style.display = 'none';
+    renderAll();
+    setSyncStatus('synced', 'Salvo');
+  } catch(e) {
+    alert('Erro ao salvar: ' + e.message);
+    setSyncStatus('offline', 'Offline');
   }
 
-  const csv  = rows.map(r => r.map(c => `"${String(c).replace(/"/g,'""')}"`).join(';')).join('\r\n');
-  const blob = new Blob(['﻿' + csv], { type: 'text/csv;charset=utf-8;' });
-  const url  = URL.createObjectURL(blob);
-  const a    = Object.assign(document.createElement('a'), {
-    href: url,
-    download: `MODELO_PAC_${cfg.label.replace(/\s/g,'_')}_${state.year}-${mk}.csv`,
-  });
-  a.click();
-  setTimeout(() => URL.revokeObjectURL(url), 500);
+  if (btn) { btn.disabled = false; btn.textContent = '💾 Salvar Tudo'; }
 }
 
-// ─── Importar Planilha (CSV) ──────────────────────────────────────────────────
+// ── CSV ───────────────────────────────────────────────
+function downloadTemplate() {
+  if (!canDo('importar')) return;
+  const cfg  = EQUIP_CONFIG[currentEquip];
+  const y = currentYear, m = currentMonth;
+  const days = daysInMonth(y, m);
+
+  let csv = `PAC - Controle de Temperatura\nEquipamento;${cfg.label}\nReferência;${cfg.ref}\nPeríodo;${padZ(m)}/${y}\n\n`;
+  csv += `Data;Manhã - Hora;Manhã - Temp (°C);Tarde - Hora;Tarde - Temp (°C);Noite - Hora;Noite - Temp (°C);Responsável\n`;
+
+  for (let d = 1; d <= days; d++) {
+    const ds = `${y}-${padZ(m)}-${padZ(d)}`;
+    const e  = localCache.entries[ds];
+    csv += [
+      formatDateBR(ds),
+      e?.manha?.hora||'', e?.manha?.temp !== undefined ? e.manha.temp : '',
+      e?.tarde?.hora||'', e?.tarde?.temp !== undefined ? e.tarde.temp : '',
+      e?.noite?.hora||'', e?.noite?.temp !== undefined ? e.noite.temp : '',
+      e?.responsavel||'',
+    ].join(';') + '\n';
+  }
+
+  const blob = new Blob(['﻿' + csv], { type: 'text/csv;charset=utf-8;' });
+  const url  = URL.createObjectURL(blob);
+  const a    = document.createElement('a');
+  a.href     = url;
+  a.download = `PAC_Modelo_${currentEquip}_${y}-${padZ(m)}.csv`;
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
 function importCSV(file) {
-  if (!file) return;
-
+  if (!canDo('importar')) return;
   const reader = new FileReader();
-  reader.onload = async evt => {
-    let text = evt.target.result;
+  reader.onload = async ev => {
+    try {
+      let text = ev.target.result;
+      if (text.charCodeAt(0) === 0xFEFF) text = text.slice(1);
+      const sep   = text.includes(';') ? ';' : ',';
+      const lines = text.split('\n').map(l => l.split(sep).map(c => c.trim().replace(/^"|"$/g, '')));
 
-    // Remove BOM se presente
-    if (text.charCodeAt(0) === 0xFEFF) text = text.slice(1);
+      let headerIdx = -1;
+      lines.forEach((row, i) => { if (row.some(c => /^data$/i.test(c))) headerIdx = i; });
+      if (headerIdx < 0) { alert('Formato inválido. Baixe o modelo primeiro.'); return; }
 
-    // Detecta separador: ponto-e-vírgula ou vírgula
-    const sep = text.indexOf(';') !== -1 ? ';' : ',';
+      const byMonth = {};
+      for (let i = headerIdx + 1; i < lines.length; i++) {
+        const row = lines[i];
+        if (!row[0] || !/\d{2}\/\d{2}\/\d{4}/.test(row[0])) continue;
+        const [d, m, y] = row[0].split('/');
+        const ds  = `${y}-${m}-${d}`;
+        const mk  = monthKey(currentEquip, parseInt(y), parseInt(m));
+        const lk  = lsKey(currentEquip, parseInt(y), parseInt(m));
 
-    const lines = text.split(/\r?\n/).map(l => l.trim()).filter(Boolean);
+        if (!byMonth[mk]) {
+          let cache = { entries: {}, supervisor: {} };
+          try { const r = localStorage.getItem(lk); if (r) cache = JSON.parse(r); } catch(e) {}
+          byMonth[mk] = { year: parseInt(y), month: parseInt(m), lk, cache };
+        }
 
-    // Encontra a linha de cabeçalho das colunas (contém "Data")
-    let headerIdx = -1;
-    for (let i = 0; i < lines.length; i++) {
-      const clean = lines[i].replace(/"/g, '').toLowerCase();
-      if (clean.startsWith('data')) { headerIdx = i; break; }
-    }
+        const hasData = row.slice(1,7).some(v => v !== '');
+        if (!hasData) continue;
 
-    if (headerIdx === -1) {
-      alert('Formato não reconhecido.\nUse o modelo baixado pelo botão "⬇ Baixar Modelo".');
-      return;
-    }
-
-    function parseLine(line) {
-      const cols = []; let cur = '', inQ = false;
-      for (const ch of line) {
-        if (ch === '"') { inQ = !inQ; }
-        else if (ch === sep && !inQ) { cols.push(cur.trim()); cur = ''; }
-        else { cur += ch; }
+        byMonth[mk].cache.entries[ds] = {
+          manha:       { hora: row[1]||'', temp: row[2] },
+          tarde:       { hora: row[3]||'', temp: row[4] },
+          noite:       { hora: row[5]||'', temp: row[6] },
+          responsavel: row[7]||'',
+          atualizadoEm:  new Date().toISOString(),
+          atualizadoPor: userProfile?.nome || 'Importação',
+        };
       }
-      cols.push(cur.trim());
-      return cols;
-    }
 
-    function toDateStr(raw) {
-      // Aceita DD/MM/YYYY, DD/MM/YY, YYYY-MM-DD
-      const r = raw.replace(/"/g,'').trim();
-      let m = r.match(/^(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{2,4})$/);
-      if (!m) return null;
-      let [, a, b, c] = m;
-      let day, month, year;
-      if (parseInt(c) > 31) { // YYYY primeiro? Não neste padrão, mas cobre DD/MM/YYYY
-        day = parseInt(a); month = parseInt(b); year = parseInt(c);
-      } else {
-        day = parseInt(a); month = parseInt(b); year = parseInt(c);
+      for (const [mk, data] of Object.entries(byMonth)) {
+        localStorage.setItem(data.lk, JSON.stringify(data.cache));
+        await db.collection('pac_monitoramento').doc(mk).set({ entries: data.cache.entries });
+        if (data.year === currentYear && data.month === currentMonth)
+          localCache.entries = data.cache.entries;
       }
-      if (year < 100) year += 2000;
-      return `${year}-${String(month).padStart(2,'0')}-${String(day).padStart(2,'0')}`;
+
+      renderAll();
+      alert('Importação concluída!');
+    } catch(err) {
+      alert('Erro na importação: ' + err.message);
     }
-
-    function toHora(v) {
-      const s = v.replace(/"/g,'').trim();
-      return /^\d{1,2}:\d{2}$/.test(s) ? s.padStart(5,'0') : '';
-    }
-
-    function toTemp(v) {
-      const s = v.replace(/"/g,'').replace(',','.').trim();
-      const n = parseFloat(s);
-      return isNaN(n) ? '' : String(n);
-    }
-
-    // Processa linhas de dados
-    const byMonth = {};
-    let imported = 0, skipped = 0;
-
-    for (let i = headerIdx + 1; i < lines.length; i++) {
-      const cols = parseLine(lines[i]);
-      if (!cols[0] || !cols[0].replace(/"/g,'').trim()) continue;
-
-      const ds = toDateStr(cols[0]);
-      if (!ds) { skipped++; continue; }
-
-      const mk = ds.slice(0, 7);
-      if (!byMonth[mk]) byMonth[mk] = {};
-
-      const entry = {
-        responsavel: (cols[7] || '').replace(/"/g,'').trim(),
-        manha: { hora: toHora(cols[1]||''), temp: toTemp(cols[2]||'') },
-        tarde: { hora: toHora(cols[3]||''), temp: toTemp(cols[4]||'') },
-        noite: { hora: toHora(cols[5]||''), temp: toTemp(cols[6]||'') },
-      };
-
-      const hasData = entry.manha.temp || entry.tarde.temp || entry.noite.temp || entry.responsavel
-                   || entry.manha.hora || entry.tarde.hora || entry.noite.hora;
-      if (!hasData) { skipped++; continue; }
-
-      byMonth[mk][ds] = entry;
-      imported++;
-    }
-
-    if (imported === 0) {
-      alert('Nenhum dado encontrado.\nVerifique se o arquivo usa o modelo correto e tem dados preenchidos.');
-      return;
-    }
-
-    // Salva no localStorage e Firestore — mesmo esquema do lançamento em lote
-    setSyncStatus('syncing', 'Importando...');
-    const allLS = lsAll();
-
-    const promises = Object.entries(byMonth).map(async ([mk, newEntries]) => {
-      const docKey   = `${state.equip}_${mk}`;
-      const existing = (allLS[docKey] && allLS[docKey].entries) || {};
-      const merged   = { ...existing, ...newEntries };
-
-      allLS[docKey] = { entries: merged, supervisor: (allLS[docKey] && allLS[docKey].supervisor) || {} };
-
-      if (mk === monthKey()) localCache.entries = merged;
-
-      try {
-        await db.collection(COL).doc(docKey).set({
-          entries:    merged,
-          supervisor: allLS[docKey].supervisor,
-        });
-      } catch (_) { /* salvo localmente */ }
-    });
-
-    try { localStorage.setItem(LS_KEY, JSON.stringify(allLS)); } catch (_) {}
-    await Promise.all(promises);
-
-    renderTable();
-    setSyncStatus('synced', 'Sincronizado');
-
-    const msg = [`✅ ${imported} dia(s) importado(s) com sucesso!`];
-    if (skipped > 0) msg.push(`⚠ ${skipped} linha(s) ignorada(s) (datas inválidas ou vazias).`);
-    const meses = Object.keys(byMonth).map(mk => {
-      const [y,m] = mk.split('-');
-      return `${MONTHS_PT[parseInt(m)-1]} ${y}`;
-    }).join(', ');
-    msg.push(`Mês(es) atualizados: ${meses}`);
-    alert(msg.join('\n'));
   };
-
-  reader.onerror = () => alert('Erro ao ler o arquivo. Tente novamente.');
   reader.readAsText(file, 'UTF-8');
 }
 
-// ─── Exportar CSV ─────────────────────────────────────────────────────────────
-function exportCSV() {
-  const cfg     = EQUIP_CFG[state.equip];
-  const entries = getEntries();
-  const days    = new Date(state.year, state.month + 1, 0).getDate();
-  const sup     = getSupervisor();
+// ── IMPRIMIR ──────────────────────────────────────────
+function printPAC() {
+  if (!canDo('imprimir')) return;
+  const cfg  = EQUIP_CONFIG[currentEquip];
+  const y = currentYear, m = currentMonth;
+  const days  = daysInMonth(y, m);
+  const names = ['Janeiro','Fevereiro','Março','Abril','Maio','Junho','Julho','Agosto','Setembro','Outubro','Novembro','Dezembro'];
 
-  const rows = [
-    ['PAC - Planilha de Monitoramento de Temperatura'],
-    [`Equipamento: ${cfg.label}`, `Temp. Referência: ${cfg.refTemp}`],
-    [`Mês: ${MONTHS_PT[state.month]} ${state.year}`],
-    [`Supervisor: ${sup.name}`],
-    [],
-    ['Data','Manhã - Horário','Manhã - Temperatura (°C)',
-     'Tarde - Horário','Tarde - Temperatura (°C)',
-     'Noite - Horário','Noite - Temperatura (°C)','Responsável'],
-  ];
-
+  let rows = '';
   for (let d = 1; d <= days; d++) {
-    const ds   = `${state.year}-${String(state.month + 1).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
-    const dFmt = `${String(d).padStart(2, '0')}/${String(state.month + 1).padStart(2, '0')}/${state.year}`;
-    const e    = entries[ds] || {};
-    rows.push([
-      dFmt,
-      (e.manha && e.manha.hora)  || '',
-      (e.manha && e.manha.temp !== '' && e.manha.temp !== undefined) ? e.manha.temp : '',
-      (e.tarde && e.tarde.hora)  || '',
-      (e.tarde && e.tarde.temp !== '' && e.tarde.temp !== undefined) ? e.tarde.temp : '',
-      (e.noite && e.noite.hora)  || '',
-      (e.noite && e.noite.temp !== '' && e.noite.temp !== undefined) ? e.noite.temp : '',
-      e.responsavel || '',
-    ]);
+    const ds  = `${y}-${padZ(m)}-${padZ(d)}`;
+    const e   = localCache.entries[ds];
+    const dt  = new Date(ds + 'T00:00:00');
+    const dow = ['Dom','Seg','Ter','Qua','Qui','Sex','Sáb'][dt.getDay()];
+    const bg  = (dt.getDay() === 0 || dt.getDay() === 6) ? '#F5F0FF' : '#fff';
+
+    const cell = (h, t) => {
+      const tc = tempClass(currentEquip, t);
+      const col = tc === 't-ok' ? '#1B5E20' : tc === 't-warn' ? '#E65100' : tc === 't-alarm' ? '#B71C1C' : '#333';
+      return `<td style="border:1px solid #ccc;padding:4px 6px">${h||''}</td><td style="border:1px solid #ccc;padding:4px 6px;font-weight:bold;color:${col}">${t!==undefined&&t!==''?parseFloat(t).toFixed(1)+'°':''}</td>`;
+    };
+
+    rows += `<tr style="background:${bg}"><td style="border:1px solid #ccc;padding:4px 8px;font-weight:700">${padZ(d)} ${dow}</td>${cell(e?.manha?.hora,e?.manha?.temp)}${cell(e?.tarde?.hora,e?.tarde?.temp)}${cell(e?.noite?.hora,e?.noite?.temp)}<td style="border:1px solid #ccc;padding:4px 6px">${e?.responsavel||''}</td></tr>`;
   }
 
-  const csv  = rows.map(r => r.map(c => `"${String(c).replace(/"/g,'""')}"`).join(',')).join('\r\n');
-  const blob = new Blob(['﻿' + csv], { type: 'text/csv;charset=utf-8;' });
-  const url  = URL.createObjectURL(blob);
-  const a    = Object.assign(document.createElement('a'), { href: url, download:
-    `PAC_${state.equip}_${state.year}-${String(state.month + 1).padStart(2, '0')}.csv` });
-  a.click();
-  setTimeout(() => URL.revokeObjectURL(url), 500);
+  document.getElementById('printView').innerHTML = `
+    <div style="font-family:Arial,sans-serif;max-width:210mm;margin:0 auto;padding:10px">
+      <div style="text-align:center;margin-bottom:12px">
+        <h2 style="font-size:13pt;margin:0">REI DA MUSSARELA E DO PÃO DE QUEIJO</h2>
+        <h3 style="font-size:11pt;margin:4px 0">PAC — CONTROLE DE TEMPERATURA</h3>
+        <p style="font-size:9pt;color:#555;margin:2px 0">${cfg.label} · Ref: ${cfg.ref} · ${names[m-1]} ${y}</p>
+      </div>
+      <table style="width:100%;border-collapse:collapse;font-size:9pt">
+        <thead>
+          <tr style="background:#1565C0;color:#fff">
+            <th rowspan="2" style="padding:5px;border:1px solid #333">Data</th>
+            <th colspan="2" style="padding:5px;border:1px solid #333">Manhã</th>
+            <th colspan="2" style="padding:5px;border:1px solid #333">Tarde</th>
+            <th colspan="2" style="padding:5px;border:1px solid #333">Noite</th>
+            <th rowspan="2" style="padding:5px;border:1px solid #333">Responsável</th>
+          </tr>
+          <tr style="background:#1976D2;color:#fff">
+            <th style="padding:4px;border:1px solid #333">Hora</th><th style="padding:4px;border:1px solid #333">°C</th>
+            <th style="padding:4px;border:1px solid #333">Hora</th><th style="padding:4px;border:1px solid #333">°C</th>
+            <th style="padding:4px;border:1px solid #333">Hora</th><th style="padding:4px;border:1px solid #333">°C</th>
+          </tr>
+        </thead>
+        <tbody>${rows}</tbody>
+      </table>
+      <div style="margin-top:20px;display:flex;gap:40px;align-items:flex-end">
+        <div><p style="font-size:8pt">Supervisor:</p><div style="border-bottom:1px solid #333;width:200px;height:24px"></div></div>
+        <div><p style="font-size:8pt">Assinatura:</p><div style="border-bottom:1px solid #333;width:150px;height:24px"></div></div>
+        <div><p style="font-size:8pt">Data: ___/___/______</p></div>
+      </div>
+    </div>`;
+
+  window.print();
 }
 
-// ─── Eventos ──────────────────────────────────────────────────────────────────
-document.querySelectorAll('.tab').forEach(tab => {
-  tab.addEventListener('click', () => {
-    state.equip = tab.dataset.equip;
-    hideForm();
-    subscribeMonth();
-  });
-});
+function exportCSV() {
+  if (!canDo('exportar')) return;
+  const cfg = EQUIP_CONFIG[currentEquip];
+  const y = currentYear, m = currentMonth;
+  let csv = `Equipamento;${cfg.label}\nReferência;${cfg.ref}\nPeríodo;${padZ(m)}/${y}\n\n`;
+  csv += `Data;Manhã - Hora;Manhã °C;Tarde - Hora;Tarde °C;Noite - Hora;Noite °C;Responsável\n`;
 
-document.getElementById('prevMonth').addEventListener('click', () => {
-  if (--state.month < 0) { state.month = 11; state.year--; }
-  hideForm();
-  subscribeMonth();
-});
-
-document.getElementById('nextMonth').addEventListener('click', () => {
-  if (++state.month > 11) { state.month = 0; state.year++; }
-  hideForm();
-  subscribeMonth();
-});
-
-document.getElementById('btnAdd').addEventListener('click', () => {
-  const today = new Date().toISOString().slice(0, 10);
-  const [y, m] = today.split('-').map(Number);
-  const noMesAtual = y === state.year && m - 1 === state.month;
-
-  if (noMesAtual) {
-    // Mês atual: abre no dia de hoje com auto-preenchimento de hora/período
-    startEdit(today, true);
-  } else {
-    // Mês passado: abre o formulário com data em branco para o usuário escolher o dia
-    startEditBlank();
+  for (let d = 1; d <= daysInMonth(y, m); d++) {
+    const ds = `${y}-${padZ(m)}-${padZ(d)}`;
+    const e  = localCache.entries[ds];
+    csv += [
+      formatDateBR(ds),
+      e?.manha?.hora||'', e?.manha?.temp||'',
+      e?.tarde?.hora||'', e?.tarde?.temp||'',
+      e?.noite?.hora||'', e?.noite?.temp||'',
+      e?.responsavel||'',
+    ].join(';') + '\n';
   }
-});
 
-document.getElementById('btnSave').addEventListener('click', saveEntryForm);
-document.getElementById('btnCancel').addEventListener('click', hideForm);
-document.getElementById('btnCancelBottom').addEventListener('click', hideForm);
-document.getElementById('btnBulk').addEventListener('click', openBulkModal);
-document.getElementById('btnTemplate').addEventListener('click', downloadTemplate);
-document.getElementById('btnImport').addEventListener('click', () =>
-  document.getElementById('csvFileInput').click());
-document.getElementById('csvFileInput').addEventListener('change', e => {
-  if (e.target.files[0]) importCSV(e.target.files[0]);
-  e.target.value = '';
-});
-document.getElementById('btnPrint').addEventListener('click', printPAC);
-document.getElementById('btnExport').addEventListener('click', exportCSV);
+  const blob = new Blob(['﻿' + csv], { type: 'text/csv;charset=utf-8;' });
+  const url  = URL.createObjectURL(blob);
+  const a    = document.createElement('a');
+  a.href = url; a.download = `PAC_${currentEquip}_${y}-${padZ(m)}.csv`;
+  a.click(); URL.revokeObjectURL(url);
+}
 
-// ─── Inicialização ────────────────────────────────────────────────────────────
-// subscribeMonth já faz: carrega localStorage → renderiza → conecta Firestore
-subscribeMonth();
+// ── PAINEL ADMIN ──────────────────────────────────────
+async function openAdminPanel() {
+  if (!canDo('admin')) return;
+  document.getElementById('adminModal').style.display = 'flex';
+  await loadUsers();
+}
+
+async function loadUsers() {
+  const tbody = document.getElementById('usersBody');
+  if (!tbody) return;
+  tbody.innerHTML = '<tr><td colspan="5" style="text-align:center;padding:20px;color:#90A4AE">Carregando...</td></tr>';
+
+  try {
+    const snap = await db.collection('usuarios').get();
+    tbody.innerHTML = '';
+
+    if (snap.empty) {
+      tbody.innerHTML = '<tr><td colspan="5" style="text-align:center;padding:20px;color:#90A4AE">Nenhum usuário.</td></tr>';
+      return;
+    }
+
+    snap.forEach(doc => {
+      const uid  = doc.id;
+      const data = doc.data();
+      const tr   = document.createElement('tr');
+      const status = data.ativo ? 'ativo' : 'pendente';
+      const statusLabel = data.ativo ? '✓ Ativo' : '⏳ Pendente';
+      const isMe = uid === currentUser?.uid;
+
+      tr.innerHTML = `
+        <td style="font-weight:600">${data.nome||'—'}</td>
+        <td style="font-size:.8rem;color:#546E7A">${data.email||'—'}</td>
+        <td><span class="badge-role ${data.cargo}">${data.cargo}</span></td>
+        <td><span class="badge-status ${status}">${statusLabel}</span></td>
+        <td>
+          <div class="actions-cell">
+            <button class="btn-table btn-edit" data-uid="${uid}">✏ Editar</button>
+            ${!isMe ? `<button class="btn-table btn-del" data-uid="${uid}" data-active="${data.ativo}">${data.ativo ? '🔒 Desativar' : '🔓 Ativar'}</button>` : ''}
+          </div>
+        </td>`;
+
+      tr.querySelector(`[data-uid="${uid}"].btn-edit`)
+        ?.addEventListener('click', () => openUserModal(uid, data));
+
+      tr.querySelector(`[data-uid="${uid}"].btn-del`)
+        ?.addEventListener('click', () => toggleUserActive(uid, data));
+
+      tbody.appendChild(tr);
+    });
+  } catch(e) {
+    tbody.innerHTML = `<tr><td colspan="5" style="color:red;padding:12px">${e.message}</td></tr>`;
+  }
+}
+
+async function toggleUserActive(uid, data) {
+  const newState = !data.ativo;
+  if (!confirm(`${newState ? 'Ativar' : 'Desativar'} o usuário "${data.nome}"?`)) return;
+  try {
+    await db.collection('usuarios').doc(uid).update({ ativo: newState });
+    await loadUsers();
+  } catch(e) {
+    alert('Erro: ' + e.message);
+  }
+}
+
+function openUserModal(uid, data) {
+  editingUid = uid || null;
+  const isNew = !uid;
+
+  document.getElementById('userModalTitle').textContent = isNew ? 'Novo Usuário' : 'Editar Usuário';
+  document.getElementById('uNome').value     = data?.nome  || '';
+  document.getElementById('uEmail').value    = data?.email || '';
+  document.getElementById('uPassword').value = '';
+  document.getElementById('uCargo').value    = data?.cargo || 'operador';
+
+  document.getElementById('uEmailGroup').style.display    = isNew ? '' : 'none';
+  document.getElementById('uPasswordGroup').style.display = isNew ? '' : 'none';
+
+  buildPermsGrid(data?.permissoes || DEFAULT_PERMS[data?.cargo || 'operador']);
+  document.getElementById('userModal').style.display = 'flex';
+
+  document.getElementById('uCargo').onchange = () => {
+    buildPermsGrid(DEFAULT_PERMS[document.getElementById('uCargo').value]);
+  };
+}
+
+function buildPermsGrid(currentPerms) {
+  const grid = document.getElementById('permsGrid');
+  grid.innerHTML = '';
+  Object.entries(PERM_LABELS).forEach(([key, label]) => {
+    const item = document.createElement('label');
+    item.className = 'perm-item';
+    const cb  = document.createElement('input');
+    cb.type   = 'checkbox';
+    cb.name   = key;
+    cb.checked = !!(currentPerms && currentPerms[key]);
+    const span = document.createElement('span');
+    span.className   = 'perm-label';
+    span.textContent = label;
+    item.appendChild(cb);
+    item.appendChild(span);
+    grid.appendChild(item);
+  });
+}
+
+function getPermsFromGrid() {
+  const perms = {};
+  Object.keys(PERM_LABELS).forEach(key => {
+    const cb = document.querySelector(`#permsGrid input[name="${key}"]`);
+    perms[key] = cb ? cb.checked : false;
+  });
+  return perms;
+}
+
+async function saveUser() {
+  const nome  = document.getElementById('uNome').value.trim();
+  const cargo = document.getElementById('uCargo').value;
+  const perms = getPermsFromGrid();
+  const isNew = !editingUid;
+
+  if (!nome) { alert('Informe o nome.'); return; }
+
+  const btn = document.getElementById('btnSaveUser');
+  if (btn) { btn.disabled = true; btn.textContent = 'Salvando...'; }
+
+  try {
+    if (isNew) {
+      const email = document.getElementById('uEmail').value.trim();
+      const pass  = document.getElementById('uPassword').value;
+      if (!email) { alert('Informe o e-mail.'); return; }
+      if (pass.length < 6) { alert('Senha: mínimo 6 caracteres.'); return; }
+
+      // REST API — cria usuário sem fazer logout do admin atual
+      const res = await fetch(
+        `https://identitytoolkit.googleapis.com/v1/accounts:signUp?key=${firebaseConfig.apiKey}`,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ email, password: pass, returnSecureToken: false }),
+        }
+      );
+
+      if (!res.ok) {
+        const err = await res.json();
+        const msgs = { 'EMAIL_EXISTS': 'E-mail já cadastrado.' };
+        throw new Error(msgs[err.error.message] || err.error.message);
+      }
+
+      const resData = await res.json();
+      await db.collection('usuarios').doc(resData.localId).set({
+        nome, email, cargo,
+        ativo: true,
+        permissoes: perms,
+        criadoEm: firebase.firestore.FieldValue.serverTimestamp(),
+      });
+    } else {
+      await db.collection('usuarios').doc(editingUid).update({ nome, cargo, permissoes: perms });
+    }
+
+    document.getElementById('userModal').style.display = 'none';
+    await loadUsers();
+    alert(isNew ? 'Usuário criado!' : 'Usuário atualizado!');
+  } catch(e) {
+    alert('Erro: ' + e.message);
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = 'Salvar'; }
+  }
+}
+
+// ── NAVEGAÇÃO ─────────────────────────────────────────
+function changeMonth(delta) {
+  currentMonth += delta;
+  if (currentMonth > 12) { currentMonth = 1;  currentYear++; }
+  if (currentMonth < 1)  { currentMonth = 12; currentYear--; }
+  subscribeMonth();
+}
+
+function changeEquip(equip) {
+  currentEquip = equip;
+  document.querySelectorAll('.tab').forEach(t => t.classList.toggle('active', t.dataset.equip === equip));
+  const now = new Date();
+  currentYear  = now.getFullYear();
+  currentMonth = now.getMonth() + 1;
+  closeForm();
+  subscribeMonth();
+}
+
+// ── EVENTOS ───────────────────────────────────────────
+function setupBulkModalEvents() {
+  document.getElementById('btnBulkSave')   ?.addEventListener('click', saveBulkEntries);
+  document.getElementById('btnBulkCancel') ?.addEventListener('click', () => { document.getElementById('bulkModal').style.display = 'none'; });
+  document.getElementById('bulkModalClose')?.addEventListener('click', () => { document.getElementById('bulkModal').style.display = 'none'; });
+
+  document.getElementById('btnSetRange')?.addEventListener('click', () => {
+    const from = document.getElementById('qDateFrom').value;
+    const to   = document.getElementById('qDateTo').value;
+    if (!from || !to || from > to) { alert('Período inválido.'); return; }
+    buildBulkRows(from, to);
+  });
+
+  document.getElementById('btnFillHoras')?.addEventListener('click', () => {
+    const mH = document.getElementById('qManhaHora').value;
+    const tH = document.getElementById('qTardeHora').value;
+    const nH = document.getElementById('qNoiteHora').value;
+    document.querySelectorAll('#bulkBody tr[data-date]').forEach(tr => {
+      const ds = tr.dataset.date;
+      if (mH) { const el = tr.querySelector(`[data-field="${ds}|manha|hora"]`); if (el && !el.value) el.value = mH; }
+      if (tH) { const el = tr.querySelector(`[data-field="${ds}|tarde|hora"]`); if (el && !el.value) el.value = tH; }
+      if (nH) { const el = tr.querySelector(`[data-field="${ds}|noite|hora"]`); if (el && !el.value) el.value = nH; }
+    });
+  });
+
+  document.getElementById('btnFillResp')?.addEventListener('click', () => {
+    const r = document.getElementById('qResp').value;
+    if (!r) return;
+    document.querySelectorAll('#bulkBody [data-field$="|resp"]').forEach(el => { if (!el.value) el.value = r; });
+  });
+}
+
+function setupAdminEvents() {
+  document.getElementById('btnAdminPanel') ?.addEventListener('click', openAdminPanel);
+  document.getElementById('adminModalClose')?.addEventListener('click', () => { document.getElementById('adminModal').style.display = 'none'; });
+  document.getElementById('btnNewUser')    ?.addEventListener('click', () => openUserModal(null, null));
+  document.getElementById('btnSaveUser')   ?.addEventListener('click', saveUser);
+  document.getElementById('btnCancelUser') ?.addEventListener('click', () => { document.getElementById('userModal').style.display = 'none'; });
+  document.getElementById('userModalClose')?.addEventListener('click', () => { document.getElementById('userModal').style.display = 'none'; });
+
+  document.getElementById('adminModal')?.addEventListener('click', e => {
+    if (e.target === document.getElementById('adminModal')) document.getElementById('adminModal').style.display = 'none';
+  });
+  document.getElementById('userModal')?.addEventListener('click', e => {
+    if (e.target === document.getElementById('userModal')) document.getElementById('userModal').style.display = 'none';
+  });
+}
+
+function setupLoginEvents() {
+  document.getElementById('btnLogin')       ?.addEventListener('click', doLogin);
+  document.getElementById('btnRegister')    ?.addEventListener('click', doRegister);
+  document.getElementById('btnLogout')      ?.addEventListener('click', doLogout);
+  document.getElementById('btnLogoutPending')?.addEventListener('click', doLogout);
+  document.getElementById('btnGoRegister')  ?.addEventListener('click', () => { clearAuthError(); hide('panelLogin'); show('panelRegister'); });
+  document.getElementById('btnGoLogin')     ?.addEventListener('click', () => { clearAuthError(); hide('panelRegister'); show('panelLogin'); });
+  document.getElementById('loginPassword')  ?.addEventListener('keydown', e => { if (e.key === 'Enter') doLogin(); });
+  document.getElementById('regPassword')    ?.addEventListener('keydown', e => { if (e.key === 'Enter') doRegister(); });
+}
+
+function setupAppEvents() {
+  document.querySelectorAll('.tab').forEach(tab => {
+    tab.addEventListener('click', () => changeEquip(tab.dataset.equip));
+  });
+
+  document.getElementById('prevMonth')     ?.addEventListener('click', () => changeMonth(-1));
+  document.getElementById('nextMonth')     ?.addEventListener('click', () => changeMonth(+1));
+  document.getElementById('btnBulk')       ?.addEventListener('click', openBulkModal);
+  document.getElementById('btnTemplate')   ?.addEventListener('click', downloadTemplate);
+  document.getElementById('btnImport')     ?.addEventListener('click', () => document.getElementById('csvFileInput').click());
+  document.getElementById('btnPrint')      ?.addEventListener('click', printPAC);
+  document.getElementById('btnExport')     ?.addEventListener('click', exportCSV);
+
+  document.getElementById('csvFileInput')?.addEventListener('change', e => {
+    const f = e.target.files[0];
+    if (f) { importCSV(f); e.target.value = ''; }
+  });
+
+  document.getElementById('fabAdd')         ?.addEventListener('click', startEditBlank);
+  document.getElementById('btnCancel')       ?.addEventListener('click', closeForm);
+  document.getElementById('btnCancelBottom') ?.addEventListener('click', closeForm);
+  document.getElementById('btnSave')         ?.addEventListener('click', doSave);
+
+  document.getElementById('bulkModal')?.addEventListener('click', e => {
+    if (e.target === document.getElementById('bulkModal')) document.getElementById('bulkModal').style.display = 'none';
+  });
+}
+
+// ── INIT ──────────────────────────────────────────────
+function init() {
+  setupLoginEvents();
+  setupAppEvents();
+  setupBulkModalEvents();
+  setupAdminEvents();
+  initAuth();
+}
+
+init();

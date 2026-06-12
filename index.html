@@ -2,14 +2,72 @@
 <html lang="pt-BR">
 <head>
   <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0" />
   <title>PAC — Monitoramento de Temperatura</title>
-  <link rel="stylesheet" href="style.css?v=5" />
+  <link rel="stylesheet" href="style.css?v=6" />
 </head>
 <body>
 
-<!-- ══════════ TELA DO APP ══════════ -->
-<div class="app" id="app">
+<!-- ══════ TELA DE LOGIN ══════ -->
+<div class="login-screen" id="loginScreen" style="display:none">
+  <div class="login-card">
+    <div class="login-brand">
+      <div class="brand-logo-login">
+        <span class="brand-rei">REI</span>
+        <span class="brand-sub">da Mussarela<br>e do Pão de Queijo</span>
+      </div>
+      <h1>PAC — Temperatura</h1>
+      <p>Controle de temperatura da rede de frio</p>
+    </div>
+
+    <div id="loginError" class="auth-error" style="display:none"></div>
+
+    <!-- Painel login -->
+    <div id="panelLogin">
+      <div class="form-group">
+        <label>E-mail</label>
+        <input type="email" id="loginEmail" placeholder="seu@email.com" autocomplete="email" />
+      </div>
+      <div class="form-group">
+        <label>Senha</label>
+        <input type="password" id="loginPassword" placeholder="••••••••" autocomplete="current-password" />
+      </div>
+      <button class="btn-auth" id="btnLogin">Entrar</button>
+      <p class="auth-link">Não tem acesso? <button class="link-btn" id="btnGoRegister">Solicitar cadastro</button></p>
+    </div>
+
+    <!-- Painel cadastro -->
+    <div id="panelRegister" style="display:none">
+      <div class="form-group">
+        <label>Nome completo</label>
+        <input type="text" id="regNome" placeholder="Seu nome" autocomplete="name" />
+      </div>
+      <div class="form-group">
+        <label>E-mail</label>
+        <input type="email" id="regEmail" placeholder="seu@email.com" autocomplete="email" />
+      </div>
+      <div class="form-group">
+        <label>Senha</label>
+        <input type="password" id="regPassword" placeholder="Mínimo 6 caracteres" autocomplete="new-password" />
+      </div>
+      <button class="btn-auth" id="btnRegister">Criar conta</button>
+      <p class="auth-link"><button class="link-btn" id="btnGoLogin">Voltar ao login</button></p>
+    </div>
+  </div>
+</div>
+
+<!-- ══════ AGUARDANDO ATIVAÇÃO ══════ -->
+<div class="pending-screen" id="pendingScreen" style="display:none">
+  <div class="pending-card">
+    <div class="pending-icon">⏳</div>
+    <h2>Cadastro enviado!</h2>
+    <p>Aguardando ativação pelo administrador.<br>Entre em contato com seu supervisor.</p>
+    <button class="btn-auth" id="btnLogoutPending">Sair</button>
+  </div>
+</div>
+
+<!-- ══════ APP PRINCIPAL ══════ -->
+<div class="app" id="app" style="display:none">
 
   <header class="app-header">
     <div class="brand">
@@ -19,14 +77,17 @@
       </div>
       <div class="brand-divider"></div>
       <div class="brand-title">
-        <h1>PAC — Planilha de Monitoramento de Temperatura</h1>
-        <p>Setor de Produção · Rede de Frio · Frequência: 3× ao dia</p>
+        <h1>PAC — Monitoramento de Temperatura</h1>
+        <p class="hide-mobile">Setor de Produção · Rede de Frio · 3× ao dia</p>
       </div>
     </div>
-    <div class="doc-meta">
-      <div>Data de emissão: 01/04/26</div>
-      <div>Revisão nº: — &nbsp; Data: —</div>
-      <div>Documento: 01</div>
+    <div class="header-right">
+      <div class="user-info" id="userInfo">
+        <span class="user-name" id="userName">—</span>
+        <span class="user-role" id="userRole">—</span>
+      </div>
+      <button class="btn-icon-header" id="btnAdminPanel" title="Administração" style="display:none">⚙</button>
+      <button class="btn-icon-header" id="btnLogout" title="Sair">⏏</button>
     </div>
   </header>
 
@@ -34,21 +95,21 @@
   <nav class="tabs">
     <button class="tab active" data-equip="refrig">
       <span class="tab-icon">❄</span>
-      Cont 1 — Refrigeração
+      <span class="tab-label">Cont 1 — Refrigeração</span>
       <span class="tab-ref">0°C a 4°C</span>
     </button>
     <button class="tab" data-equip="cong">
       <span class="tab-icon">🧊</span>
-      Cont 2 — Congelamento
+      <span class="tab-label">Cont 2 — Congelamento</span>
       <span class="tab-ref">−18°C</span>
     </button>
   </nav>
 
   <!-- BARRA OBJETIVO -->
-  <div class="equip-bar">
+  <div class="equip-bar hide-mobile">
     <span><b>Objetivo:</b> Monitorar temperatura da rede de frio</span>
-    <span><b>Temp. referência:</b> <span id="refTempLabel">0°C a 4°C</span></span>
-    <span><b>Equipamento:</b> <span id="equipLabel">Cont 1 - Refrigeração</span></span>
+    <span><b>Ref.:</b> <span id="refTempLabel">0°C a 4°C</span></span>
+    <span><b>Equip.:</b> <span id="equipLabel">Cont 1 - Refrigeração</span></span>
   </div>
 
   <!-- TOOLBAR -->
@@ -58,18 +119,17 @@
       <span id="monthLabel" class="month-label">—</span>
       <button id="nextMonth" class="btn-nav">&#9654;</button>
     </div>
-    <div class="toolbar-actions">
+    <div class="toolbar-actions" id="toolbarActions">
       <span class="sync-status" id="syncStatus">
         <span class="sync-dot"></span>
-        <span id="syncLabel">Conectando...</span>
+        <span id="syncLabel" class="hide-mobile">Conectando...</span>
       </span>
-      <button class="btn-action btn-add"      id="btnAdd">+ Nova Leitura</button>
-      <button class="btn-action btn-bulk"     id="btnBulk">📋 Lançamento em Lote</button>
-      <button class="btn-action btn-template" id="btnTemplate">⬇ Baixar Modelo</button>
-      <button class="btn-action btn-import"   id="btnImport">↑ Importar Planilha</button>
-      <button class="btn-action btn-print"    id="btnPrint">🖨 Imprimir PAC</button>
-      <button class="btn-action btn-export"   id="btnExport">↓ Exportar CSV</button>
-      <input type="file" id="csvFileInput" accept=".csv,.xlsx,.xls" style="display:none" />
+      <button class="btn-action btn-bulk"     id="btnBulk"     style="display:none">📋 <span class="btn-txt">Lote</span></button>
+      <button class="btn-action btn-template" id="btnTemplate" style="display:none">⬇ <span class="btn-txt hide-mobile">Modelo</span></button>
+      <button class="btn-action btn-import"   id="btnImport"   style="display:none">↑ <span class="btn-txt hide-mobile">Importar</span></button>
+      <button class="btn-action btn-print"    id="btnPrint"    style="display:none">🖨 <span class="btn-txt hide-mobile">Imprimir</span></button>
+      <button class="btn-action btn-export"   id="btnExport"   style="display:none">↓ <span class="btn-txt hide-mobile">Exportar</span></button>
+      <input type="file" id="csvFileInput" accept=".csv" style="display:none" />
     </div>
   </div>
 
@@ -125,17 +185,17 @@
     <table class="pac-table" id="pacTable">
       <thead>
         <tr class="thead-top">
-          <th rowspan="2">Data<br><small>d/m/a</small></th>
-          <th colspan="2">Manhã</th>
-          <th colspan="2">Tarde</th>
-          <th colspan="2">Noite</th>
-          <th rowspan="2">Responsável</th>
+          <th rowspan="2">Data</th>
+          <th colspan="2">Manhã ☀</th>
+          <th colspan="2">Tarde 🌤</th>
+          <th colspan="2">Noite 🌙</th>
+          <th rowspan="2" class="hide-mobile">Responsável</th>
           <th rowspan="2" class="no-print">Ações</th>
         </tr>
         <tr class="thead-sub">
-          <th>Horário</th><th>Temperatura</th>
-          <th>Horário</th><th>Temperatura</th>
-          <th>Horário</th><th>Temperatura</th>
+          <th>Hora</th><th>°C</th>
+          <th>Hora</th><th>°C</th>
+          <th>Hora</th><th>°C</th>
         </tr>
       </thead>
       <tbody id="pacBody"></tbody>
@@ -143,7 +203,7 @@
   </div>
 
   <!-- RODAPÉ SUPERVISOR -->
-  <div class="supervisor-panel">
+  <div class="supervisor-panel hide-mobile">
     <div class="sup-field">
       <label>Nome do supervisor:</label>
       <input type="text" id="supervisorName" placeholder="Nome completo" />
@@ -158,46 +218,42 @@
     </div>
   </div>
 
+  <!-- FAB MOBILE -->
+  <button class="fab" id="fabAdd" style="display:none" title="Nova Leitura">+</button>
+
 </div><!-- /app -->
 
-<!-- ══════════ MODAL DE LANÇAMENTO EM LOTE ══════════ -->
-<div class="modal-overlay" id="bulkModal" style="display:none" role="dialog" aria-modal="true">
+<!-- ══════ MODAL LANÇAMENTO EM LOTE ══════ -->
+<div class="modal-overlay" id="bulkModal" style="display:none">
   <div class="modal">
-
     <div class="modal-header">
       <div>
         <h2 id="bulkModalTitle">Lançamento em Lote</h2>
-        <p class="modal-subtitle">Preencha os campos diretamente na tabela. Use Tab para avançar entre células.</p>
+        <p class="modal-subtitle">Use Tab para avançar entre células.</p>
       </div>
       <button class="btn-close" id="bulkModalClose">✕</button>
     </div>
-
-    <!-- Ações rápidas -->
     <div class="bulk-quick-bar">
       <div class="quick-fill-group qfg-period">
         <label>Período:</label>
         <input type="date" id="qDateFrom" />
         <span class="qfg-sep">até</span>
         <input type="date" id="qDateTo" />
-        <button class="btn-quick btn-quick-primary" id="btnSetRange">Gerar tabela</button>
+        <button class="btn-quick btn-quick-primary" id="btnSetRange">Gerar</button>
       </div>
       <div class="quick-fill-separator"></div>
       <div class="quick-fill-group">
-        <label>Hora padrão — Manhã:</label>
-        <input type="time" id="qManhaHora" value="08:00" />
-        <label>Tarde:</label>
-        <input type="time" id="qTardeHora" value="14:00" />
-        <label>Noite:</label>
-        <input type="time" id="qNoiteHora" value="20:00" />
-        <button class="btn-quick" id="btnFillHoras">Aplicar horários em branco</button>
+        <label class="hide-mobile">Horário padrão:</label>
+        <input type="time" id="qManhaHora" value="08:00" title="Manhã" />
+        <input type="time" id="qTardeHora" value="14:00" title="Tarde" />
+        <input type="time" id="qNoiteHora" value="20:00" title="Noite" />
+        <button class="btn-quick" id="btnFillHoras">⏱ Aplicar</button>
       </div>
       <div class="quick-fill-group">
-        <label>Responsável padrão:</label>
-        <input type="text" id="qResp" placeholder="Nome" style="width:140px" />
-        <button class="btn-quick" id="btnFillResp">Aplicar em branco</button>
+        <input type="text" id="qResp" placeholder="Responsável padrão" style="width:150px" />
+        <button class="btn-quick" id="btnFillResp">👤 Aplicar</button>
       </div>
     </div>
-
     <div class="modal-body">
       <table class="bulk-table">
         <thead>
@@ -207,21 +263,20 @@
             <th colspan="2">Tarde 🌤</th>
             <th colspan="2">Noite 🌙</th>
             <th rowspan="2">Responsável</th>
-            <th rowspan="2" class="col-clear">Limpar</th>
+            <th rowspan="2" class="col-clear">✕</th>
           </tr>
           <tr>
-            <th>Horário</th><th>Temp (°C)</th>
-            <th>Horário</th><th>Temp (°C)</th>
-            <th>Horário</th><th>Temp (°C)</th>
+            <th>Hora</th><th>°C</th>
+            <th>Hora</th><th>°C</th>
+            <th>Hora</th><th>°C</th>
           </tr>
         </thead>
         <tbody id="bulkBody"></tbody>
       </table>
     </div>
-
     <div class="modal-footer">
-      <div class="bulk-legend">
-        <span class="leg leg-ok">▌ Dentro do limite</span>
+      <div class="bulk-legend hide-mobile">
+        <span class="leg leg-ok">▌ Ok</span>
         <span class="leg leg-warn">▌ Atenção</span>
         <span class="leg leg-alarm">▌ Fora do limite</span>
       </div>
@@ -230,16 +285,87 @@
         <button class="btn-secondary" id="btnBulkCancel">Cancelar</button>
       </div>
     </div>
-
   </div>
 </div>
 
-<!-- ══════════ ÁREA DE IMPRESSÃO ══════════ -->
+<!-- ══════ MODAL ADMIN — USUÁRIOS ══════ -->
+<div class="modal-overlay" id="adminModal" style="display:none">
+  <div class="modal modal-wide">
+    <div class="modal-header">
+      <h2>⚙ Administração de Usuários</h2>
+      <button class="btn-close" id="adminModalClose">✕</button>
+    </div>
+    <div class="modal-body" style="padding:20px">
+      <div style="display:flex;justify-content:flex-end;margin-bottom:12px">
+        <button class="btn-primary" id="btnNewUser">+ Novo Usuário</button>
+      </div>
+      <div class="table-wrapper" style="margin:0">
+        <table class="pac-table users-table">
+          <thead>
+            <tr>
+              <th>Nome</th>
+              <th>E-mail</th>
+              <th>Cargo</th>
+              <th>Status</th>
+              <th>Ações</th>
+            </tr>
+          </thead>
+          <tbody id="usersBody"></tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ══════ MODAL CRIAR/EDITAR USUÁRIO ══════ -->
+<div class="modal-overlay" id="userModal" style="display:none">
+  <div class="modal modal-sm">
+    <div class="modal-header">
+      <h2 id="userModalTitle">Novo Usuário</h2>
+      <button class="btn-close" id="userModalClose">✕</button>
+    </div>
+    <div class="modal-body" style="padding:20px;display:flex;flex-direction:column;gap:12px">
+      <div class="form-group">
+        <label>Nome completo</label>
+        <input type="text" id="uNome" placeholder="Nome do funcionário" />
+      </div>
+      <div class="form-group" id="uEmailGroup">
+        <label>E-mail</label>
+        <input type="email" id="uEmail" placeholder="email@empresa.com" />
+      </div>
+      <div class="form-group" id="uPasswordGroup">
+        <label>Senha inicial</label>
+        <input type="password" id="uPassword" placeholder="Mínimo 6 caracteres" />
+      </div>
+      <div class="form-group">
+        <label>Cargo</label>
+        <select id="uCargo" class="form-select">
+          <option value="operador">Operador</option>
+          <option value="supervisor">Supervisor</option>
+          <option value="admin">Administrador</option>
+        </select>
+      </div>
+      <div class="perms-section">
+        <label style="font-size:.78rem;font-weight:700;color:var(--muted);display:block;margin-bottom:8px">PERMISSÕES</label>
+        <div class="perms-grid" id="permsGrid"></div>
+      </div>
+    </div>
+    <div class="modal-footer">
+      <div class="modal-footer-actions">
+        <button class="btn-primary"   id="btnSaveUser">Salvar</button>
+        <button class="btn-secondary" id="btnCancelUser">Cancelar</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ══════ IMPRESSÃO ══════ -->
 <div class="print-view" id="printView"></div>
 
 <!-- Firebase SDK -->
 <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-auth-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore-compat.js"></script>
-<script src="app.js?v=5"></script>
+<script src="app.js?v=6"></script>
 </body>
 </html>
