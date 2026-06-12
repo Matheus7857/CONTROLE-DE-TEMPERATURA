@@ -36,6 +36,7 @@ const DEFAULT_PERMS = {
 // ── ESTADO ────────────────────────────────────────────
 let currentUser   = null;
 let userProfile   = null;
+let isRegistering = false; // evita race condition no onAuthStateChanged
 let currentEquip  = 'refrig';
 let currentYear   = new Date().getFullYear();
 let currentMonth  = new Date().getMonth() + 1;
@@ -213,29 +214,47 @@ async function doRegister() {
   const pass  =  document.getElementById('regPassword')?.value || '';
   clearAuthError();
 
-  if (!nome)       { showAuthError('Informe seu nome.'); return; }
-  if (!email)      { showAuthError('Informe seu e-mail.'); return; }
+  if (!nome)           { showAuthError('Informe seu nome.'); return; }
+  if (!email)          { showAuthError('Informe seu e-mail.'); return; }
   if (pass.length < 6) { showAuthError('Senha deve ter pelo menos 6 caracteres.'); return; }
 
   const btn = document.getElementById('btnRegister');
   if (btn) { btn.disabled = true; btn.textContent = 'Criando conta...'; }
 
+  isRegistering = true;
   try {
+    // 1. Cria usuário Auth (agora está autenticado)
+    const cred = await auth.createUserWithEmailAndPassword(email, pass);
+    const uid  = cred.user.uid;
+
+    // 2. Verifica se é o primeiro usuário (agora autenticado → Firestore permite)
     const snap    = await db.collection('usuarios').limit(1).get();
-    const isFirst = snap.empty;
-    const cred    = await auth.createUserWithEmailAndPassword(email, pass);
-    const uid     = cred.user.uid;
+    const isFirst = snap.empty || (snap.size === 1 && snap.docs[0].id === uid);
     const cargo   = isFirst ? 'admin' : 'operador';
 
-    await db.collection('usuarios').doc(uid).set({
+    // 3. Cria perfil no Firestore
+    const perfil = {
       nome,
       email,
       cargo,
       ativo: isFirst,
       permissoes: { ...DEFAULT_PERMS[cargo] },
       criadoEm: firebase.firestore.FieldValue.serverTimestamp(),
-    });
+    };
+    await db.collection('usuarios').doc(uid).set(perfil);
+
+    // 4. Navega diretamente sem esperar o onAuthStateChanged
+    currentUser  = cred.user;
+    userProfile  = { ...perfil, ativo: isFirst };
+    isRegistering = false;
+
+    if (isFirst) {
+      showApp();
+    } else {
+      showPendingScreen();
+    }
   } catch(e) {
+    isRegistering = false;
     const msgs = {
       'auth/email-already-in-use': 'Este e-mail já está cadastrado.',
       'auth/invalid-email':        'E-mail inválido.',
@@ -254,6 +273,7 @@ async function doLogout() {
 
 function initAuth() {
   auth.onAuthStateChanged(async user => {
+    if (isRegistering) return; // aguarda o doRegister terminar de escrever o perfil
     if (user) {
       currentUser = user;
       try {
